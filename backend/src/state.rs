@@ -9,4 +9,5 @@ pub struct AppState {
     pub pool: SqlitePool,
     pub cookie_secure: bool,
     pub runtime: Arc<dyn RuntimeAdapter>,
+    pub wireguard_master_key: Option<[u8; 32]>,
 }
