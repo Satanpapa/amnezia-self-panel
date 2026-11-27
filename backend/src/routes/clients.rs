@@ -74,7 +74,7 @@ pub async fn list(
         ).bind(container_id).fetch_all(&state.pool).await
     } else {
         sqlx::query_as::<_, ClientRecord>(
-            "SELECT id, container_id, name, note, assigned_ip, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at FROM clients ORDER BY created_at DESC"
+            "SELECT id, container_id, name, note, assigned_ip, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, wireguard_public_key FROM clients ORDER BY created_at DESC"
         ).fetch_all(&state.pool).await
     }.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(ClientList { items }))
@@ -165,7 +165,7 @@ pub async fn create(
     })?;
 
     let item = sqlx::query_as::<_, ClientRecord>(
-        "SELECT id, container_id, name, note, assigned_ip, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at FROM clients WHERE id = ?"
+        "SELECT id, container_id, name, note, assigned_ip, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, wireguard_public_key FROM clients WHERE id = ?"
     ).bind(&id).fetch_one(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read saved client"))?;
 
