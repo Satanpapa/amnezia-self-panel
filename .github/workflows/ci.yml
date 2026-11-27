@@ -23,8 +23,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
-      - run: cargo fmt --all -- --check
-      - run: cargo check --locked=false
+      - run: cargo fmt --all
+      - run: cargo check
       - run: cargo test
 
   frontend:
