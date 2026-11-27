@@ -44,7 +44,7 @@ pub async fn login(
         .execute(&state.pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let cookie = Cookie::build((COOKIE_NAME, token))
-        .http_only().secure(state.cookie_secure).same_site(SameSite::Strict).path("/").build();
+        .http_only(true).secure(state.cookie_secure).same_site(SameSite::Strict).path("/").build();
     Ok((jar.add(cookie), Json(AuthResponse { authenticated: true, username: Some(username) })))
 }
 
@@ -75,6 +75,6 @@ pub async fn logout(
             .bind(token_hash).execute(&state.pool).await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
-    let removal = Cookie::build((COOKIE_NAME, "")).path("/").http_only().secure(state.cookie_secure).same_site(SameSite::Strict).build();
+    let removal = Cookie::build((COOKIE_NAME, "")).path("/").http_only(true).secure(state.cookie_secure).same_site(SameSite::Strict).build();
     Ok((jar.remove(removal), Json(AuthResponse { authenticated: false, username: None })))
 }
