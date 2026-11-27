@@ -73,7 +73,7 @@ Open the Vite URL (normally http://127.0.0.1:5173). The dev server proxies `/api
 - `PUT /api/containers/:container_id/awg-profile` (authenticated, revision-checked metadata update)
 - `POST /api/containers/:container_id/clients`
 
-AmneziaWG profiles are submitted with `awg_settings` when creating an `amnezia-awg` record. Settings are persisted as JSON metadata and validated server-side (including AWG 3.1 ContentPaddingAddition, RandomTrailers and DisableCookies). Existing AWG profiles can be edited; updates require the current `expected_revision`, increment `revision`, and are audited. This is still metadata-only: settings are not applied to a running interface or emitted into client configs. HeaderProtectionKey is intentionally not exposed until encrypted secret storage and key lifecycle are implemented.
+AmneziaWG profiles are submitted with `awg_settings` when creating an `amnezia-awg` record. Settings are persisted as JSON metadata and validated server-side (including AWG 3.1 ContentPaddingAddition, RandomTrailers and DisableCookies). Existing AWG profiles can be edited; updates require the current `expected_revision`, increment `revision`, and are audited. This is still metadata-only: settings are not applied to a running interface or emitted into client configs. HeaderProtectionKey is intentionally not exposed until its separate secret-generation, storage and synchronization lifecycle is implemented.
 - `GET /api/clients`
 - `POST /api/clients/:client_id/disable`
 
@@ -87,7 +87,7 @@ The initial admin password must be 12-256 characters. Usernames are 3-32 ASCII l
 - Set `COOKIE_SECURE=true` when serving over HTTPS.
 - Use HTTPS in production; do not expose the development server directly to the Internet.
 - The initial version does not yet include login rate limiting, full CSRF defenses, password reset or multi-user roles.
-- Container/client records are preview metadata only. No WireGuard keys, peer configs, running VPN process, Docker container or subscription download is created yet.
+- Container records and runtime remain preview-only. WireGuard/AmneziaWG client keypairs are generated and private keys are encrypted at rest, but peers are not installed into a running VPN interface and no working client configuration or subscription download is produced yet.
 - Curve25519 keypair generation and authenticated encryption at rest are implemented. Private key export/decryption, actual peer installation/revocation, `vpn://` serialization and Docker execution are not implemented yet.
 
 ## Runtime architecture
