@@ -106,7 +106,7 @@ pub async fn create(
         }
     }
 
-    let row = sqlx::query("SELECT subnet, protocol FROM protocol_containers WHERE id = ?")
+    let row = sqlx::query("SELECT subnet, protocol, wireguard_server_public_key FROM protocol_containers WHERE id = ?")
         .bind(&container_id).fetch_optional(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?
         .ok_or((StatusCode::NOT_FOUND, "Container not found"))?;
@@ -114,6 +114,13 @@ pub async fn create(
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
     let protocol: String = sqlx::Row::try_get(&row, "protocol")
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
+    if protocol == "amnezia-awg" || protocol == "wireguard" {
+        let server_public_key: Option<String> = sqlx::Row::try_get(&row, "wireguard_server_public_key")
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
+        if server_public_key.is_none() {
+            return Err((StatusCode::CONFLICT, "Provision the server WireGuard key before creating clients"));
+        }
+    }
     let keypair = if protocol == "amnezia-awg" || protocol == "wireguard" {
         let master_key = state.wireguard_master_key.as_ref()
             .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Set WIREGUARD_MASTER_KEY before creating WireGuard or AmneziaWG clients"))?;
