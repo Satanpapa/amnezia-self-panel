@@ -1,0 +1,2 @@
+ALTER TABLE protocol_containers ADD COLUMN wireguard_server_public_key TEXT;
+ALTER TABLE protocol_containers ADD COLUMN wireguard_server_private_key_encrypted BLOB;
