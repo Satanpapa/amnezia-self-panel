@@ -64,6 +64,7 @@ function App() {
   const [clients, setClients] = useState<Client[]>([]);
   const [section, setSection] = useState<Section>('overview');
   const [showContainerForm, setShowContainerForm] = useState(false);
+  const [editingAwgId, setEditingAwgId] = useState<string | null>(null);
   const [clientFormFor, setClientFormFor] = useState<string | null>(null);
   const [issuedToken, setIssuedToken] = useState('');
   const [clientSearch, setClientSearch] = useState('');
@@ -143,11 +144,16 @@ function App() {
   async function createContainer(event: FormEvent) {
     event.preventDefault(); setActionBusy(true); setError('');
     try {
-      const body: Record<string, unknown> = {
-        ...containerDraft, listen_port: Number(containerDraft.listen_port), mtu: Number(containerDraft.mtu),
-      };
-      if (containerDraft.protocol === 'amnezia-awg') body.awg_settings = awgPayload();
-      await api('/api/containers', { method: 'POST', body: JSON.stringify(body) });
+      if (editingAwgId) {
+        const target = containers.find(item => item.id === editingAwgId);
+        if (!target) throw new Error('Профиль больше не найден. Обнови список.');
+        await api('/api/containers/' + editingAwgId + '/awg-profile', { method: 'PUT', body: JSON.stringify({ expected_revision: target.revision, settings: awgPayload() }) });
+        setEditingAwgId(null);
+      } else {
+        const body: Record<string, unknown> = { ...containerDraft, listen_port: Number(containerDraft.listen_port), mtu: Number(containerDraft.mtu) };
+        if (containerDraft.protocol === 'amnezia-awg') body.awg_settings = awgPayload();
+        await api('/api/containers', { method: 'POST', body: JSON.stringify(body) });
+      }
       setShowContainerForm(false);
       setContainerDraft({ name: '', protocol: 'amnezia-awg', endpoint: '', listen_port: '443', transport: 'udp', subnet: '10.66.0.0/24', dns: '1.1.1.1', mtu: '1280' });
       setAwgDraft(emptyAwg);
@@ -184,9 +190,18 @@ function App() {
     return matchesText && matchesProtocol;
   }), [clients, containers, clientSearch, protocolFilter]);
 
+  function beginAwgEdit(container: Container) {
+    let saved: Partial<AwgSettings> = {};
+    try { saved = JSON.parse(container.awg_settings_json || '{}') as Partial<AwgSettings>; } catch {}
+    const str = (value: unknown) => value === undefined || value === null ? '' : String(value);
+    setAwgDraft({ version: saved.version ?? '2.0', jc: str(saved.jc), jmin: str(saved.jmin), jmax: str(saved.jmax), s1: str(saved.s1), s2: str(saved.s2), s3: str(saved.s3), s4: str(saved.s4), h1: str(saved.h1), h2: str(saved.h2), h3: str(saved.h3), h4: str(saved.h4), i1: str(saved.i1), i2: str(saved.i2), i3: str(saved.i3), i4: str(saved.i4), i5: str(saved.i5), content_padding_addition: str(saved.content_padding_addition), random_trailers: saved.random_trailers ?? false, disable_cookies: saved.disable_cookies ?? false });
+    setContainerDraft({ name: container.name, protocol: container.protocol, endpoint: container.endpoint, listen_port: String(container.listen_port), transport: container.transport, subnet: container.subnet, dns: container.dns, mtu: String(container.mtu) });
+    setEditingAwgId(container.id); setShowContainerForm(true); setSection('protocols');
+  }
+
   function renderContainerCard(container: Container) {
     return <div key={container.id}>
-      <ContainerCard container={container} clients={clients} onAdd={() => {
+      <ContainerCard container={container} clients={clients} onEdit={() => beginAwgEdit(container)} onAdd={() => {
         setClientFormFor(clientFormFor === container.id ? null : container.id);
         setClientName(''); setClientNote('');
       }} />
@@ -275,7 +290,7 @@ function App() {
           <div className="panel-head"><div><small>PROTOCOL LAB</small><h2>Серверные профили</h2></div><button className="primary compact" onClick={() => setShowContainerForm(v => !v)}>{showContainerForm ? 'Закрыть редактор' : '＋ Новый профиль'}</button></div>
           <p className="section-lead">Параметры сохраняются в базе и проходят серверную валидацию. Фактический запуск интерфейса VPN пока не включён.</p>
           {showContainerForm && <form className="editor-form" onSubmit={createContainer}>
-            <div className="form-section-title">01 / БАЗОВЫЕ ПАРАМЕТРЫ</div>
+            <div className="form-section-title">{editingAwgId ? 'РЕДАКТИРОВАНИЕ AWG · БАЗОВЫЕ ПАРАМЕТРЫ НЕ ИЗМЕНЯЮТСЯ' : '01 / БАЗОВЫЕ ПАРАМЕТРЫ'}</div>
             <label>Название<input required minLength={2} maxLength={48} value={containerDraft.name} onChange={e => setContainerDraft({...containerDraft,name:e.target.value})} placeholder="Например, Finland AWG" /></label>
             <label>Протокол<select value={containerDraft.protocol} onChange={e => setContainerDraft({...containerDraft,protocol:e.target.value})}><option value="amnezia-awg">AmneziaWG</option><option value="wireguard">WireGuard</option><option value="openvpn">OpenVPN</option><option value="openvpn-cloak">OpenVPN + Cloak</option></select></label>
             <label>Домен / IP сервера<input required value={containerDraft.endpoint} onChange={e => setContainerDraft({...containerDraft,endpoint:e.target.value})} placeholder="vpn.example.com" /></label>
@@ -309,7 +324,7 @@ function App() {
               </>}
               <div className="awg-footnote">H1–H4 могут быть числами или диапазонами без пересечений. I1–I5 — CPS-цепочка; формат проверяется базово. Для AWG 3.1 здесь хранятся флаги RandomTrailers / DisableCookies и ContentPaddingAddition. HeaderProtectionKey пока не генерируется и не хранится: для него сначала нужен безопасный жизненный цикл секретов.</div>
             </>}
-            <div className="form-actions"><span>PREVIEW · Сохранение не запускает VPN и не применяет настройки к серверу.</span><button className="primary" disabled={actionBusy}>{actionBusy ? 'Сохранение…' : 'Сохранить профиль'}</button></div>
+            <div className="form-actions"><span>PREVIEW · Сохранение не запускает VPN и не применяет настройки к серверу.</span><button className="primary" disabled={actionBusy}>{actionBusy ? 'Сохранение…' : editingAwgId ? 'Сохранить новую ревизию AWG' : 'Создать профиль'}</button></div>
           </form>}
           {containers.length === 0 ? <div className="empty small-empty"><b>Нет профилей</b><p>Создай конфигурацию протокола, чтобы начать.</p></div> :
             <div className="container-list">{containers.map(container => renderContainerCard(container))}</div>}
@@ -337,7 +352,7 @@ function App() {
   );
 }
 
-function ContainerCard({ container, clients, onAdd }: { container: Container; clients: Client[]; onAdd: () => void }) {
+function ContainerCard({ container, clients, onAdd, onEdit }: { container: Container; clients: Client[]; onAdd: () => void; onEdit: () => void }) {
   const related = clients.filter(client => client.container_id === container.id);
   let awg: Partial<AwgSettings> = {};
   try { awg = JSON.parse(container.awg_settings_json || '{}') as Partial<AwgSettings>; } catch {}
@@ -345,7 +360,7 @@ function ContainerCard({ container, clients, onAdd }: { container: Container; cl
     <div className="container-top"><div><b>{container.name}</b><span className="protocol-tag">{protocolNames[container.protocol] ?? container.protocol}</span></div><span className="preview-tag">PREVIEW</span></div>
     <div className="container-meta"><span>⌖ {container.endpoint}:{container.listen_port}/{container.transport}</span><span>▦ {container.subnet}</span><span>DNS {container.dns}</span><span>MTU {container.mtu}</span></div>
     {container.protocol === 'amnezia-awg' && <div className="awg-summary"><span>AWG {awg.version ?? '—'}</span><span>Jc {awg.jc ?? '—'}</span><span>Junk {awg.jmin ?? '—'}–{awg.jmax ?? '—'} B</span><span>Headers {[awg.h1,awg.h2,awg.h3,awg.h4].filter(Boolean).length}/4</span></div>}
-    <div className="container-bottom"><span>{related.length} устройств · ревизия {container.revision}</span><button className="secondary compact" onClick={onAdd}>＋ Добавить устройство</button></div>
+    <div className="container-bottom"><span>{related.length} устройств · ревизия {container.revision}</span><div className="card-actions">{container.protocol === 'amnezia-awg' && <button className="secondary compact" onClick={onEdit}>Настроить AWG</button>}<button className="secondary compact" onClick={onAdd}>＋ Добавить устройство</button></div></div>
   </article>;
 }
 
