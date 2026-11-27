@@ -19,6 +19,8 @@ Self-hosted control plane for AmneziaWG, WireGuard, OpenVPN and OpenVPN over Clo
 - [x] GitHub Actions: Rust `cargo check` + `cargo test`, frontend production build.
 - [x] Preview data model for protocol containers and clients.
 - [x] Container/client CRUD foundations, IPv4 allocation and one-time subscription token issuance (preview only).
+- [x] Reject overlapping IPv4 address pools for newly created VPN records.
+- [x] Unit tests for subnet overlap and adjacency.
 - [x] RuntimeAdapter boundary and safe PreviewRuntime implementation.
 - [x] Docker Engine connectivity adapter (read-only health probe).
 - [ ] Docker container create/start/stop/remove lifecycle.
