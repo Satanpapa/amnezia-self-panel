@@ -9,7 +9,11 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tower_http::{cors::{Any, CorsLayer}, limit::RequestBodyLimitLayer, trace::TraceLayer};
 use tracing_subscriber::EnvFilter;
 
-use crate::{routes::{auth, clients, containers, runtime as runtime_routes, setup, system}, runtime::PreviewRuntime, state::AppState};
+use crate::{
+    routes::{auth, clients, containers, runtime as runtime_routes, setup, system},
+    runtime::{DockerRuntime, PreviewRuntime, RuntimeAdapter},
+    state::AppState,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,10 +37,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = SqlitePoolOptions::new().max_connections(5).connect_with(options).await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
 
+    let runtime: Arc<dyn RuntimeAdapter> = match env::var("RUNTIME_MODE").as_deref() {
+        Ok("docker") => Arc::new(DockerRuntime::new()),
+        Ok("preview") | Err(_) => Arc::new(PreviewRuntime),
+        Ok(other) => return Err(format!("Unsupported RUNTIME_MODE '{other}'. Use 'preview' or 'docker'.").into()),
+    };
+
     let state = AppState {
         pool,
         cookie_secure: env::var("COOKIE_SECURE").map(|v| v == "true").unwrap_or(false),
-        runtime: Arc::new(PreviewRuntime),
+        runtime,
     };
 
     let app = Router::new()
