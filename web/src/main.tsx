@@ -184,6 +184,20 @@ function App() {
     return matchesText && matchesProtocol;
   }), [clients, containers, clientSearch, protocolFilter]);
 
+  function renderContainerCard(container: Container) {
+    return <div key={container.id}>
+      <ContainerCard container={container} clients={clients} onAdd={() => {
+        setClientFormFor(clientFormFor === container.id ? null : container.id);
+        setClientName(''); setClientNote('');
+      }} />
+      {clientFormFor === container.id && <form className="client-form" onSubmit={event => void createClient(event, container.id)}>
+        <label>Имя устройства<input required maxLength={48} value={clientName} onChange={event => setClientName(event.target.value)} placeholder="Ноутбук, телефон…" /></label>
+        <label>Заметка<input maxLength={200} value={clientNote} onChange={event => setClientNote(event.target.value)} placeholder="Необязательно" /></label>
+        <button className="primary compact" disabled={actionBusy}>{actionBusy ? 'Создание…' : 'Создать доступ'}</button>
+      </form>}
+    </div>;
+  }
+
   if (loading) return <div className="loading">Загрузка панели…</div>;
   if (error && !health) return <div className="loading error-screen"><b>Не удалось подключиться к backend</b><p>{error}</p><button className="secondary" onClick={() => { setLoading(true); setError(''); void refresh(); }}>Повторить</button></div>;
 
@@ -253,7 +267,7 @@ function App() {
           <section className="panel">
             <div className="panel-head"><div><small>INFRASTRUCTURE</small><h2>VPN-конфигурации</h2></div><button className="primary compact" onClick={() => {setSection('protocols');setShowContainerForm(true);}}>＋ Добавить сервер</button></div>
             {containers.length === 0 ? <div className="empty"><div className="empty-icon">⌁</div><b>Пока нет VPN-серверов</b><p>Создай первую конфигурацию и настрой параметры протокола. Пока она хранится в Preview и не запускает VPN.</p><button className="primary compact" onClick={() => {setSection('protocols');setShowContainerForm(true);}}>Создать конфигурацию</button></div> :
-              <div className="container-list">{containers.slice(0, 4).map(container => <ContainerCard key={container.id} container={container} clients={clients} onAdd={() => {setSection('protocols');setClientFormFor(container.id);}} />)}</div>}
+              <div className="container-list">{containers.slice(0, 4).map(container => renderContainerCard(container))}</div>}
           </section>
         </>}
 
@@ -298,7 +312,7 @@ function App() {
             <div className="form-actions"><span>PREVIEW · Сохранение не запускает VPN и не применяет настройки к серверу.</span><button className="primary" disabled={actionBusy}>{actionBusy ? 'Сохранение…' : 'Сохранить профиль'}</button></div>
           </form>}
           {containers.length === 0 ? <div className="empty small-empty"><b>Нет профилей</b><p>Создай конфигурацию протокола, чтобы начать.</p></div> :
-            <div className="container-list">{containers.map(container => <ContainerCard key={container.id} container={container} clients={clients} onAdd={() => setClientFormFor(container.id)} />)}</div>}
+            <div className="container-list">{containers.map(container => renderContainerCard(container))}</div>}
         </section>}
 
         {section === 'clients' && <section className="panel">
