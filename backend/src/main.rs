@@ -47,8 +47,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_state(state)
         .layer(RequestBodyLimitLayer::new(16 * 1024))
         .layer(CorsLayer::new().allow_origin([
-            "http://127.0.0.1:5173".parse().unwrap(),
-            "http://localhost:5173".parse().unwrap(),
+            "http://127.0.0.1:5173".parse::<axum::http::HeaderValue>().unwrap(),
+            "http://localhost:5173".parse::<axum::http::HeaderValue>().unwrap(),
         ]).allow_credentials(true).allow_methods(Any).allow_headers(Any))
         .layer(TraceLayer::new_for_http());
 
