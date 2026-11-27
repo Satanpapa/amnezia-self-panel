@@ -65,7 +65,7 @@ pub async fn initialize(
     tx.commit().await.map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not save administrator"))?;
 
     let cookie = Cookie::build(("amnezia_panel_session", token))
-        .http_only().secure(state.cookie_secure).same_site(SameSite::Strict).path("/").build();
+        .http_only(true).secure(state.cookie_secure).same_site(SameSite::Strict).path("/").build();
     let jar = jar.add(cookie);
     Ok((jar, Json(InitializeResponse { ok: true, username: username.to_string() })))
 }
