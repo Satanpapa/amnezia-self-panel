@@ -114,3 +114,5 @@ footer{margin-top:29px;color:#63758d;font:9px 'DM Mono',monospace;letter-spacing
 
 .card-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
 @media(max-width:600px){.container-bottom{align-items:flex-start;flex-direction:column}.card-actions{width:100%}}
+
+.editor-form input:disabled,.editor-form select:disabled{opacity:.52;cursor:not-allowed;background:#111a27}
