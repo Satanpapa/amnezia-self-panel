@@ -117,6 +117,7 @@ pub struct ContainerRecord {
     pub revision: i64,
     pub created_at: String,
     pub awg_settings_json: String,
+    pub wireguard_server_public_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -170,7 +171,7 @@ pub async fn list(
 ) -> Result<Json<ContainerList>, StatusCode> {
     authenticated_admin(&state, &jar).await?;
     let items = sqlx::query_as::<_, ContainerRecord>(
-        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json FROM protocol_containers ORDER BY created_at DESC"
+        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key FROM protocol_containers ORDER BY created_at DESC"
     )
     .fetch_all(&state.pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(ContainerList { items }))
@@ -327,6 +328,57 @@ pub async fn update_awg_profile(
         "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json FROM protocol_containers WHERE id = ?"
     ).bind(&container_id).fetch_one(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read updated profile"))?;
+    Ok(Json(item))
+}
+
+
+/// Generate and store the server identity for a WireGuard-compatible profile.
+/// The private key is encrypted before it reaches SQLite and never returned.
+pub async fn provision_wireguard_server_key(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    axum::extract::Path(container_id): axum::extract::Path<String>,
+) -> Result<Json<ContainerRecord>, (StatusCode, &'static str)> {
+    let (admin_id, _) = authenticated_admin(&state, &jar).await
+        .map_err(|status| (status, "Authentication required"))?;
+    let master_key = state.wireguard_master_key.as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Set WIREGUARD_MASTER_KEY before provisioning server keys"))?;
+
+    let protocol = sqlx::query_scalar::<_, String>(
+        "SELECT protocol FROM protocol_containers WHERE id = ?"
+    ).bind(&container_id).fetch_optional(&state.pool).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?
+        .ok_or((StatusCode::NOT_FOUND, "VPN profile not found"))?;
+    if protocol != "wireguard" && protocol != "amnezia-awg" {
+        return Err((StatusCode::BAD_REQUEST, "Server keys are only supported for WireGuard and AmneziaWG profiles"));
+    }
+
+    let (private_key, public_key) = crate::security::wireguard_keys::generate_keypair();
+    let encrypted = crate::security::wireguard_keys::encrypt_private_key(master_key, &private_key)
+        .map_err(|message| (StatusCode::INTERNAL_SERVER_ERROR, message))?;
+
+    let mut tx = state.pool.begin().await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not begin key provisioning"))?;
+    let result = sqlx::query(
+        "UPDATE protocol_containers SET wireguard_server_public_key = ?, wireguard_server_private_key_encrypted = ? WHERE id = ? AND wireguard_server_public_key IS NULL"
+    ).bind(&public_key).bind(&encrypted).bind(&container_id)
+        .execute(&mut *tx).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not save server keys"))?;
+    if result.rows_affected() == 0 {
+        return Err((StatusCode::CONFLICT, "Server keys already exist; key rotation requires a separate procedure"));
+    }
+
+    let details = serde_json::json!({"container_id": container_id, "protocol": protocol}).to_string();
+    sqlx::query("INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'wireguard.server_key.provisioned', ?)")
+        .bind(admin_id).bind(details).execute(&mut *tx).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not record key provisioning"))?;
+    tx.commit().await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not commit server keys"))?;
+
+    let item = sqlx::query_as::<_, ContainerRecord>(
+        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key FROM protocol_containers WHERE id = ?"
+    ).bind(&container_id).fetch_one(&state.pool).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read provisioned profile"))?;
     Ok(Json(item))
 }
 
