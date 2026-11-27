@@ -43,3 +43,27 @@ footer{margin-top:32px;color:#63758d;font:10px 'DM Mono',monospace;letter-spacin
 footer span{float:right}
 @media(max-width:850px){.shell{grid-template-columns:1fr}aside{display:none}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:520px){main{padding:25px 16px}header{align-items:flex-start;flex-direction:column}.stats{grid-template-columns:1fr 1fr}article{padding:13px}.header-actions{width:100%}}
+
+
+/* Authentication and connected API states */
+.loading{min-height:100vh;display:grid;place-content:center;text-align:center;color:#a8b8cb;background:#090d16;font-size:13px}
+.error-screen p{max-width:460px;color:#ef9a9a;line-height:1.6}
+.auth-shell{min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(ellipse at 50% 20%,#142b3a 0%,#090d16 58%)}
+.auth-card{width:min(100%,440px);padding:36px;background:#111a29;border:1px solid #29384b;border-radius:8px;box-shadow:0 24px 80px #0006}
+.auth-brand{margin-bottom:42px}
+.eyebrow{font:10px 'DM Mono',monospace;color:#06b6d4;letter-spacing:.13em}
+.auth-card h1{margin:10px 0 0;font-size:25px;line-height:1.25}
+.auth-description{color:#8fa2ba;font-size:12px;line-height:1.7;margin:12px 0 25px}
+.auth-card form{display:grid;gap:16px}
+.auth-card label{display:grid;gap:8px;color:#b8c6d8;font-size:11px}
+.auth-card input{width:100%;padding:12px 13px;border:1px solid #304159;border-radius:4px;background:#0a1220;color:#e5edf8;font:13px Manrope;outline:none}
+.auth-card input:focus{border-color:#06b6d4;box-shadow:0 0 0 2px #06b6d422}
+.field-hint{margin-top:-9px;color:#71849d;font-size:10px}
+.form-error{padding:10px 12px;border:1px solid #713c48;background:#2b1822;color:#ffb4bd;border-radius:4px;font-size:11px;line-height:1.5}
+.submit{width:100%;padding:13px;margin-top:3px;cursor:pointer}
+.submit:disabled{opacity:.55;cursor:wait}
+.auth-foot{margin-top:27px;padding-top:17px;border-top:1px solid #263347;color:#61748c;font:9px 'DM Mono',monospace;letter-spacing:.07em;line-height:1.6}
+.user-pill{align-self:center;color:#9eb0c7;font-size:11px;padding:8px 11px;border:1px solid #29384b;border-radius:4px}
+.secondary{background:#111b2a;border:1px solid #29384b;color:#b9c7d9;cursor:pointer}
+.secondary:hover{border-color:#06b6d4;color:#e8faff}
+@media(max-width:520px){.auth-card{padding:26px 21px}.auth-brand{margin-bottom:32px}}
