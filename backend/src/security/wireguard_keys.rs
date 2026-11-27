@@ -76,7 +76,7 @@ mod tests {
         let nonce = Nonce::from_slice(&first[..12]);
         assert_eq!(cipher.decrypt(nonce, &first[12..]).unwrap().as_slice(), &[0x42u8; 32]);
         let decrypted = decrypt_private_key(&key, &first).unwrap();
-        assert_eq!(decrypted.as_ref(), &[0x42u8; 32]);
+        assert_eq!(&*decrypted, &[0x42u8; 32]);
         assert!(decrypt_private_key(&[8u8; 32], &first).is_err());
         let mut tampered = first.clone();
         *tampered.last_mut().unwrap() ^= 1;
