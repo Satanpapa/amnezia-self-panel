@@ -106,3 +106,8 @@ footer{margin-top:29px;color:#63758d;font:9px 'DM Mono',monospace;letter-spacing
 
 .check-label{display:flex!important;align-items:center;gap:9px!important;align-self:end;min-height:36px;padding:8px 10px;border:1px solid #304159;border-radius:5px;background:#101b2a}
 .check-label input{width:15px!important;height:15px;accent-color:#2dd4bf}
+
+.client-form{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;align-items:end;gap:10px;margin:9px 0 14px;padding:13px 15px;background:#0b1523;border:1px solid #29384b;border-radius:7px}
+.client-form label{display:grid;gap:7px;color:#aabbd0;font-size:9px}
+.client-form input{width:100%;min-width:0;padding:9px 10px;border:1px solid #304159;border-radius:5px;background:#09111d;color:#e5edf8;font:11px Manrope}
+@media(max-width:600px){.client-form{grid-template-columns:1fr}}
