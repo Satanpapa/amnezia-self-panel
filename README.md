@@ -22,6 +22,7 @@ Self-hosted control plane for AmneziaWG, WireGuard, OpenVPN and OpenVPN over Clo
 - [x] Reject overlapping IPv4 address pools for newly created VPN records.
 - [x] Persist validated AmneziaWG 1.5 / 2.0 / 3.1 profile settings (Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5 and AWG 3.1 transport flags) as metadata.
 - [x] Validate AWG junk packet ranges, padding constraints, header range overlaps and version-gated S3/S4 fields.
+- [x] Edit saved AWG profiles through a revision-checked API; every accepted edit increments the profile revision and creates an audit event.
 - [x] Protocol Studio UI with AWG profile editor, server overview, searchable/filterable client list and responsive navigation.
 - [x] Unit tests for subnet overlap and adjacency.
 - [x] RuntimeAdapter boundary and safe PreviewRuntime implementation.
@@ -66,9 +67,10 @@ Open the Vite URL (normally http://127.0.0.1:5173). The dev server proxies `/api
 - `POST /api/auth/logout`
 - `GET /api/runtime/status` (authenticated)
 - `GET /api/containers` / `POST /api/containers`
+- `PUT /api/containers/:container_id/awg-profile` (authenticated, revision-checked metadata update)
 - `POST /api/containers/:container_id/clients`
 
-AmneziaWG profiles are submitted with `awg_settings` when creating an `amnezia-awg` record. Settings are persisted as JSON metadata and validated server-side (including AWG 3.1 ContentPaddingAddition, RandomTrailers and DisableCookies); they are not yet applied to a running interface or emitted into client configs. HeaderProtectionKey is intentionally not exposed until encrypted secret storage and key lifecycle are implemented.
+AmneziaWG profiles are submitted with `awg_settings` when creating an `amnezia-awg` record. Settings are persisted as JSON metadata and validated server-side (including AWG 3.1 ContentPaddingAddition, RandomTrailers and DisableCookies). Existing AWG profiles can be edited; updates require the current `expected_revision`, increment `revision`, and are audited. This is still metadata-only: settings are not applied to a running interface or emitted into client configs. HeaderProtectionKey is intentionally not exposed until encrypted secret storage and key lifecycle are implemented.
 - `GET /api/clients`
 - `POST /api/clients/:client_id/disable`
 
