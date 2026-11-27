@@ -118,3 +118,5 @@ footer{margin-top:29px;color:#63758d;font:9px 'DM Mono',monospace;letter-spacing
 .editor-form input:disabled,.editor-form select:disabled{opacity:.52;cursor:not-allowed;background:#111a27}
 
 .public-key-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px}.public-key-line code{font-size:10px;color:#8aa7b8}.text-action{border:0;background:transparent;color:#62cbbd;font-size:10px;padding:0;cursor:pointer}.text-action:hover{text-decoration:underline}
+
+.server-key-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 11px;margin-top:10px;border:1px solid #263c4b;border-radius:8px;background:#0d1925}.server-key-row small{font-size:9px;letter-spacing:.09em;color:#7794a7}.server-key-row code{font-size:10px;color:#a8c3d2}
