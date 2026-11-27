@@ -43,10 +43,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(other) => return Err(format!("Unsupported RUNTIME_MODE '{other}'. Use 'preview' or 'docker'.").into()),
     };
 
+    let wireguard_master_key = match env::var("WIREGUARD_MASTER_KEY") {
+        Ok(value) => {
+            let decoded = hex::decode(value.trim())?;
+            let key: [u8; 32] = decoded.try_into().map_err(|_| "WIREGUARD_MASTER_KEY must be exactly 64 hexadecimal characters")?;
+            Some(key)
+        }
+        Err(_) => None,
+    };
+
     let state = AppState {
         pool,
         cookie_secure: env::var("COOKIE_SECURE").map(|v| v == "true").unwrap_or(false),
         runtime,
+        wireguard_master_key,
     };
 
     let app = Router::new()
