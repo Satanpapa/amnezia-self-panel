@@ -10,6 +10,8 @@ type RuntimeStatus = { mode: string; available: boolean; engine: string; message
 type AwgSettings = {
   version: string; jc?: number; jmin?: number; jmax?: number; s1?: number; s2?: number;
   s3?: number; s4?: number; h1?: string; h2?: string; h3?: string; h4?: string;
+  i1?: string; i2?: string; i3?: string; i4?: string; i5?: string;
+  content_padding_addition?: number; random_trailers?: boolean; disable_cookies?: boolean;
 };
 type Container = {
   id: string; name: string; protocol: string; status: string; endpoint: string;
@@ -27,6 +29,8 @@ type Section = 'overview' | 'protocols' | 'clients';
 const emptyAwg = {
   version: '2.0', jc: '5', jmin: '8', jmax: '80', s1: '32', s2: '64',
   s3: '16', s4: '8', h1: '', h2: '', h3: '', h4: '',
+  i1: '', i2: '', i3: '', i4: '', i5: '',
+  content_padding_addition: '', random_trailers: true, disable_cookies: true,
 };
 const protocolNames: Record<string, string> = {
   'amnezia-awg': 'AmneziaWG', wireguard: 'WireGuard', openvpn: 'OpenVPN', 'openvpn-cloak': 'OpenVPN + Cloak',
@@ -129,6 +133,10 @@ function App() {
       jc: numeric(awgDraft.jc), jmin: numeric(awgDraft.jmin), jmax: numeric(awgDraft.jmax),
       s1: numeric(awgDraft.s1), s2: numeric(awgDraft.s2), s3: numeric(awgDraft.s3), s4: numeric(awgDraft.s4),
       h1: text(awgDraft.h1), h2: text(awgDraft.h2), h3: text(awgDraft.h3), h4: text(awgDraft.h4),
+      i1: text(awgDraft.i1), i2: text(awgDraft.i2), i3: text(awgDraft.i3), i4: text(awgDraft.i4), i5: text(awgDraft.i5),
+      content_padding_addition: awgDraft.version === '3.1' ? numeric(awgDraft.content_padding_addition) : undefined,
+      random_trailers: awgDraft.version === '3.1' && awgDraft.random_trailers,
+      disable_cookies: awgDraft.version === '3.1' && awgDraft.disable_cookies,
     };
   }
 
@@ -277,7 +285,15 @@ function App() {
               </>}
               <div className="form-section-title">03 / MAGIC HEADERS</div>
               {(['h1','h2','h3','h4'] as const).map((key, index) => <label key={key}>H{index + 1} · {['init','response','cookie','data'][index]}<input value={awgDraft[key]} onChange={e => setAwgDraft({...awgDraft,[key]:e.target.value})} placeholder="Например, 100000-200000" /></label>)}
-              <div className="awg-footnote">Оставь H-поля пустыми, чтобы не переопределять их. Диапазоны должны быть непересекающимися. I1–I5 и расширенные параметры 3.1 добавим следующим этапом после тестов совместимости.</div>
+              <div className="form-section-title">04 / CPS SIGNATURE CHAIN</div>
+              {(['i1','i2','i3','i4','i5'] as const).map((key, index) => <label key={key}>I{index + 1} · signature<input value={awgDraft[key]} onChange={e => setAwgDraft({...awgDraft,[key]:e.target.value})} placeholder="<r 128> или <b 0x...>" /></label>)}
+              {awgDraft.version === '3.1' && <>
+                <div className="form-section-title">05 / TRANSPORT PROTECTION · 3.1</div>
+                <label>ContentPaddingAddition<input type="number" min="0" value={awgDraft.content_padding_addition} onChange={e => setAwgDraft({...awgDraft,content_padding_addition:e.target.value})} placeholder="По умолчанию" /></label>
+                <label className="check-label"><input type="checkbox" checked={awgDraft.random_trailers} onChange={e => setAwgDraft({...awgDraft,random_trailers:e.target.checked})} /> RandomTrailers</label>
+                <label className="check-label"><input type="checkbox" checked={awgDraft.disable_cookies} onChange={e => setAwgDraft({...awgDraft,disable_cookies:e.target.checked})} /> DisableCookies</label>
+              </>}
+              <div className="awg-footnote">H1–H4 могут быть числами или диапазонами без пересечений. I1–I5 — CPS-цепочка; формат проверяется базово. Для AWG 3.1 здесь хранятся флаги RandomTrailers / DisableCookies и ContentPaddingAddition. HeaderProtectionKey пока не генерируется и не хранится: для него сначала нужен безопасный жизненный цикл секретов.</div>
             </>}
             <div className="form-actions"><span>PREVIEW · Сохранение не запускает VPN и не применяет настройки к серверу.</span><button className="primary" disabled={actionBusy}>{actionBusy ? 'Сохранение…' : 'Сохранить профиль'}</button></div>
           </form>}
