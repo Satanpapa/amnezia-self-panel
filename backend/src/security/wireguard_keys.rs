@@ -7,6 +7,8 @@ use rand_core::{OsRng, RngCore};
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
+const KEY_ENVELOPE_VERSION: &[u8; 4] = b"WGK1";
+
 /// Generate a WireGuard-compatible Curve25519 keypair.
 pub fn generate_keypair() -> (Zeroizing<[u8; 32]>, String) {
     let secret = StaticSecret::random_from_rng(OsRng);
@@ -27,7 +29,8 @@ pub fn encrypt_private_key(master_key: &[u8; 32], private_key: &[u8; 32]) -> Res
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher.encrypt(nonce, private_key.as_ref())
         .map_err(|_| "Could not encrypt WireGuard private key")?;
-    let mut stored = Vec::with_capacity(nonce_bytes.len() + ciphertext.len());
+    let mut stored = Vec::with_capacity(KEY_ENVELOPE_VERSION.len() + nonce_bytes.len() + ciphertext.len());
+    stored.extend_from_slice(KEY_ENVELOPE_VERSION);
     stored.extend_from_slice(&nonce_bytes);
     stored.extend_from_slice(&ciphertext);
     Ok(stored)
@@ -36,14 +39,17 @@ pub fn encrypt_private_key(master_key: &[u8; 32], private_key: &[u8; 32]) -> Res
 /// Decrypt a stored private key for an authorized configuration-export path.
 /// Plaintext buffers are zeroized when dropped.
 pub fn decrypt_private_key(master_key: &[u8; 32], stored: &[u8]) -> Result<Zeroizing<[u8; 32]>, &'static str> {
-    if stored.len() < 12 + 16 {
+    if stored.len() < 4 + 12 + 16 {
         return Err("Encrypted WireGuard private key is truncated");
+    }
+    if &stored[..4] != KEY_ENVELOPE_VERSION {
+        return Err("Unsupported encrypted WireGuard private-key format");
     }
     let cipher = ChaCha20Poly1305::new_from_slice(master_key)
         .map_err(|_| "Invalid WireGuard master key")?;
-    let nonce = Nonce::from_slice(&stored[..12]);
+    let nonce = Nonce::from_slice(&stored[4..16]);
     let plaintext = Zeroizing::new(
-        cipher.decrypt(nonce, &stored[12..])
+        cipher.decrypt(nonce, &stored[16..])
             .map_err(|_| "Could not authenticate encrypted WireGuard private key")?
     );
     let key: [u8; 32] = plaintext.as_slice().try_into()
@@ -71,15 +77,16 @@ mod tests {
         let first = encrypt_private_key(&key, &[0x42u8; 32]).unwrap();
         let second = encrypt_private_key(&key, &[0x42u8; 32]).unwrap();
         assert_ne!(first, second);
-        assert!(first.len() > 12 + 16);
+        assert!(first.len() > 4 + 12 + 16);
         let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
-        let nonce = Nonce::from_slice(&first[..12]);
-        assert_eq!(cipher.decrypt(nonce, &first[12..]).unwrap().as_slice(), &[0x42u8; 32]);
+        assert_eq!(&first[..4], b"WGK1");
+        let nonce = Nonce::from_slice(&first[4..16]);
+        assert_eq!(cipher.decrypt(nonce, &first[16..]).unwrap().as_slice(), &[0x42u8; 32]);
         let decrypted = decrypt_private_key(&key, &first).unwrap();
         assert_eq!(&*decrypted, &[0x42u8; 32]);
         assert!(decrypt_private_key(&[8u8; 32], &first).is_err());
         let mut tampered = first.clone();
         *tampered.last_mut().unwrap() ^= 1;
-        assert!(cipher.decrypt(nonce, &tampered[12..]).is_err());
+        assert!(cipher.decrypt(nonce, &tampered[16..]).is_err());
     }
 }
