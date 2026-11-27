@@ -9,5 +9,5 @@ pub async fn status(
     jar: CookieJar,
 ) -> Result<Json<RuntimeStatus>, StatusCode> {
     authenticated_admin(&state, &jar).await?;
-    Ok(Json(state.runtime.status()))
+    Ok(Json(state.runtime.status().await))
 }
