@@ -58,11 +58,8 @@ impl AwgSettings {
                 return Err("S1 + 56 must not equal S2");
             }
         }
-        if self.version == "1.5" && (self.s3.is_some() || self.s4.is_some() || self.h3.is_some() || self.h4.is_some()) {
-            return Err("S3, S4, H3 and H4 require AWG 2.0 or newer");
-        }
-        if self.version == "1.5" && [self.i1.as_ref(), self.i2.as_ref(), self.i3.as_ref(), self.i4.as_ref(), self.i5.as_ref()].iter().any(|v| v.is_some()) {
-            return Err("I1-I5 require AWG 1.5 or newer");
+        if self.version == "1.5" && (self.s3.is_some() || self.s4.is_some()) {
+            return Err("S3 and S4 require AWG 2.0 or newer");
         }
 
         let headers = [&self.h1, &self.h2, &self.h3, &self.h4];
