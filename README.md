@@ -20,6 +20,9 @@ Self-hosted control plane for AmneziaWG, WireGuard, OpenVPN and OpenVPN over Clo
 - [x] Preview data model for protocol containers and clients.
 - [x] Container/client CRUD foundations, IPv4 allocation and one-time subscription token issuance (preview only).
 - [x] Reject overlapping IPv4 address pools for newly created VPN records.
+- [x] Persist validated AmneziaWG 1.5 / 2.0 / 3.1 profile settings (Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5 fields) as metadata.
+- [x] Validate AWG junk packet ranges, padding constraints, header range overlaps and version-gated S3/S4 fields.
+- [x] Protocol Studio UI with AWG profile editor, server overview, searchable/filterable client list and responsive navigation.
 - [x] Unit tests for subnet overlap and adjacency.
 - [x] RuntimeAdapter boundary and safe PreviewRuntime implementation.
 - [x] Docker Engine connectivity adapter (read-only health probe).
@@ -64,6 +67,8 @@ Open the Vite URL (normally http://127.0.0.1:5173). The dev server proxies `/api
 - `GET /api/runtime/status` (authenticated)
 - `GET /api/containers` / `POST /api/containers`
 - `POST /api/containers/:container_id/clients`
+
+AmneziaWG profiles are submitted with `awg_settings` when creating an `amnezia-awg` record. Settings are persisted as JSON metadata and validated server-side; they are not yet applied to a running interface or emitted into client configs.
 - `GET /api/clients`
 - `POST /api/clients/:client_id/disable`
 
