@@ -144,6 +144,18 @@ pub struct CreateContainerResponse {
     notice: &'static str,
 }
 
+fn validate_transport(protocol: &str, transport: &str) -> Result<(), &'static str> {
+    match protocol {
+        "amnezia-awg" | "wireguard" if transport != "udp" => {
+            Err("AmneziaWG and WireGuard require UDP transport")
+        }
+        "openvpn-cloak" if transport != "tcp" => {
+            Err("OpenVPN over Cloak requires TCP transport")
+        }
+        _ => Ok(()),
+    }
+}
+
 fn subnets_overlap(left: Ipv4Net, right: Ipv4Net) -> bool {
     let left_start = u32::from(left.network());
     let left_end = u32::from(left.broadcast());
@@ -186,6 +198,8 @@ pub async fn create(
     if !["udp", "tcp"].contains(&input.transport.as_str()) {
         return Err((StatusCode::BAD_REQUEST, "Transport must be udp or tcp"));
     }
+    validate_transport(&input.protocol, &input.transport)
+        .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
     if !(576..=9000).contains(&input.mtu) {
         return Err((StatusCode::BAD_REQUEST, "MTU must be between 576 and 9000"));
     }
@@ -318,9 +332,21 @@ pub async fn update_awg_profile(
 
 #[cfg(test)]
 mod tests {
-    use super::{subnets_overlap, AwgSettings};
+    use super::{subnets_overlap, validate_transport, AwgSettings};
     use std::str::FromStr;
     use ipnet::Ipv4Net;
+
+    #[test]
+    fn enforces_protocol_transport_compatibility() {
+        assert!(validate_transport("amnezia-awg", "udp").is_ok());
+        assert!(validate_transport("wireguard", "udp").is_ok());
+        assert!(validate_transport("openvpn", "tcp").is_ok());
+        assert!(validate_transport("openvpn", "udp").is_ok());
+        assert!(validate_transport("amnezia-awg", "tcp").is_err());
+        assert!(validate_transport("wireguard", "tcp").is_err());
+        assert!(validate_transport("openvpn-cloak", "udp").is_err());
+        assert!(validate_transport("openvpn-cloak", "tcp").is_ok());
+    }
 
     #[test]
     fn rejects_identical_and_nested_subnets() {
