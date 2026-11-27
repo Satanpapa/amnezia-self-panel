@@ -58,6 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/auth/me", get(auth::me))
         .route("/api/runtime/status", get(runtime_routes::status))
         .route("/api/containers", get(containers::list).post(containers::create))
+        .route("/api/containers/{container_id}/awg-profile", axum::routing::put(containers::update_awg_profile))
         .route("/api/containers/{container_id}/clients", axum::routing::post(clients::create))
         .route("/api/clients", get(clients::list))
         .route("/api/clients/{client_id}/disable", axum::routing::post(clients::disable))
