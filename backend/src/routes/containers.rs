@@ -306,4 +306,25 @@ mod tests {
         let padding = AwgSettings { version: "2.0".into(), s1: Some(10), s2: Some(66), ..Default::default() };
         assert!(padding.validate().is_err());
     }
+
+    #[test]
+    fn gates_transport_protection_options_to_awg31() {
+        let legacy = AwgSettings {
+            version: "2.0".into(), random_trailers: true, ..Default::default()
+        };
+        assert!(legacy.validate().is_err());
+        let modern = AwgSettings {
+            version: "3.1".into(), content_padding_addition: Some(16),
+            random_trailers: true, disable_cookies: true, ..Default::default()
+        };
+        assert!(modern.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_malformed_cps_signature_tags() {
+        let malformed = AwgSettings {
+            version: "1.5".into(), i1: Some("not-a-tag".into()), ..Default::default()
+        };
+        assert!(malformed.validate().is_err());
+    }
 }
