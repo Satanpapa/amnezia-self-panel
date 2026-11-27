@@ -30,6 +30,9 @@ pub struct AwgSettings {
     pub i3: Option<String>,
     pub i4: Option<String>,
     pub i5: Option<String>,
+    pub content_padding_addition: Option<u16>,
+    pub random_trailers: bool,
+    pub disable_cookies: bool,
 }
 
 impl AwgSettings {
@@ -60,6 +63,9 @@ impl AwgSettings {
         }
         if self.version == "1.5" && (self.s3.is_some() || self.s4.is_some()) {
             return Err("S3 and S4 require AWG 2.0 or newer");
+        }
+        if self.version != "3.1" && (self.content_padding_addition.is_some() || self.random_trailers || self.disable_cookies) {
+            return Err("ContentPaddingAddition, RandomTrailers and DisableCookies require AWG 3.1");
         }
 
         let headers = [&self.h1, &self.h2, &self.h3, &self.h4];
