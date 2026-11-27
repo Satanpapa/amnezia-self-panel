@@ -111,3 +111,6 @@ footer{margin-top:29px;color:#63758d;font:9px 'DM Mono',monospace;letter-spacing
 .client-form label{display:grid;gap:7px;color:#aabbd0;font-size:9px}
 .client-form input{width:100%;min-width:0;padding:9px 10px;border:1px solid #304159;border-radius:5px;background:#09111d;color:#e5edf8;font:11px Manrope}
 @media(max-width:600px){.client-form{grid-template-columns:1fr}}
+
+.card-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+@media(max-width:600px){.container-bottom{align-items:flex-start;flex-direction:column}.card-actions{width:100%}}
