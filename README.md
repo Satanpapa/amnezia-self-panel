@@ -20,6 +20,7 @@ Self-hosted control plane for AmneziaWG, WireGuard, OpenVPN and OpenVPN over Clo
 - [x] Preview data model for protocol containers and clients.
 - [x] Container/client CRUD foundations, IPv4 allocation and one-time subscription token issuance (preview only).
 - [x] Reject overlapping IPv4 address pools for newly created VPN records.
+- [x] Enforce transport compatibility in API and UI: WireGuard / AmneziaWG use UDP; OpenVPN over Cloak uses TCP.
 - [x] Persist validated AmneziaWG 1.5 / 2.0 / 3.1 profile settings (Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5 and AWG 3.1 transport flags) as metadata.
 - [x] Validate AWG junk packet ranges, padding constraints, header range overlaps and version-gated S3/S4 fields.
 - [x] Edit saved AWG profiles through a revision-checked API; every accepted edit increments the profile revision and creates an audit event.
