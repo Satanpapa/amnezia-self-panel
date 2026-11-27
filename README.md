@@ -21,6 +21,8 @@ Self-hosted control plane for AmneziaWG, WireGuard, OpenVPN and OpenVPN over Clo
 - [x] Container/client CRUD foundations, IPv4 allocation and one-time subscription token issuance (preview only).
 - [x] Reject overlapping IPv4 address pools for newly created VPN records.
 - [x] Enforce transport compatibility in API and UI: WireGuard / AmneziaWG use UDP; OpenVPN over Cloak uses TCP.
+- [x] Generate Curve25519 WireGuard keypairs for AmneziaWG/WireGuard clients and encrypt private keys at rest with ChaCha20-Poly1305.
+- [x] Store only the public key in normal client API responses; private key ciphertext is never serialized.
 - [x] Persist validated AmneziaWG 1.5 / 2.0 / 3.1 profile settings (Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5 and AWG 3.1 transport flags) as metadata.
 - [x] Validate AWG junk packet ranges, padding constraints, header range overlaps and version-gated S3/S4 fields.
 - [x] Edit saved AWG profiles through a revision-checked API; every accepted edit increments the profile revision and creates an audit event.
@@ -75,6 +77,8 @@ AmneziaWG profiles are submitted with `awg_settings` when creating an `amnezia-a
 - `GET /api/clients`
 - `POST /api/clients/:client_id/disable`
 
+For AmneziaWG/WireGuard client creation, configure `WIREGUARD_MASTER_KEY` in the backend `.env` as 64 hex characters (32 random bytes). Generate it once with `openssl rand -hex 32`. Back it up securely outside the database: losing it makes encrypted client private keys unrecoverable. Do not rotate it without a migration/rewrapping procedure.
+
 The initial admin password must be 12-256 characters. Usernames are 3-32 ASCII letters, digits, underscore or hyphen.
 
 ## Security notes
@@ -84,7 +88,7 @@ The initial admin password must be 12-256 characters. Usernames are 3-32 ASCII l
 - Use HTTPS in production; do not expose the development server directly to the Internet.
 - The initial version does not yet include login rate limiting, full CSRF defenses, password reset or multi-user roles.
 - Container/client records are preview metadata only. No WireGuard keys, peer configs, running VPN process, Docker container or subscription download is created yet.
-- VPN key generation, `vpn://` serialization and Docker execution are not production-ready until verified against official Amnezia/WireGuard behavior.
+- Curve25519 keypair generation and authenticated encryption at rest are implemented. Private key export/decryption, actual peer installation/revocation, `vpn://` serialization and Docker execution are not implemented yet.
 
 ## Runtime architecture
 
