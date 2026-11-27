@@ -49,13 +49,13 @@ mod tests {
     #[test]
     fn encrypts_with_random_nonce_and_authentication() {
         let key = [7u8; 32];
-        let first = encrypt_private_key(&key, b"private-key-material-padding!!....").unwrap();
+        let first = encrypt_private_key(&key, &[0x42u8; 32]).unwrap();
         let second = encrypt_private_key(&key, "private-key-material").unwrap();
         assert_ne!(first, second);
         assert!(first.len() > 12 + 16);
         let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
         let nonce = Nonce::from_slice(&first[..12]);
-        assert_eq!(cipher.decrypt(nonce, &first[12..]).unwrap(), b"private-key-material-padding!!....");
+        assert_eq!(cipher.decrypt(nonce, &first[12..]).unwrap(), [0x42u8; 32]);
         let mut tampered = first.clone();
         *tampered.last_mut().unwrap() ^= 1;
         assert!(cipher.decrypt(nonce, &tampered[12..]).is_err());
