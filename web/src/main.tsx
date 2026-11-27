@@ -6,6 +6,7 @@ import './style.css';
 type SetupStatus = { setup_required: boolean };
 type AuthResponse = { authenticated: boolean; username: string | null };
 type Health = { ok: boolean; version: string; runtime: string };
+type RuntimeStatus = { mode: string; available: boolean; engine: string; message: string; can_manage_vpn: boolean };
 type Container = {
   id: string; name: string; protocol: string; status: string; endpoint: string;
   listen_port: number; transport: string; subnet: string; dns: string; mtu: number; revision: number;
@@ -36,6 +37,7 @@ function App() {
   const [setupRequired, setSetupRequired] = useState(false);
   const [user, setUser] = useState<string | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -57,9 +59,11 @@ function App() {
     const [containerData, clientData] = await Promise.all([
       api<ListResponse<Container>>('/api/containers'),
       api<ListResponse<Client>>('/api/clients'),
+      api<RuntimeStatus>('/api/runtime/status'),
     ]);
     setContainers(containerData.items);
     setClients(clientData.items);
+    setRuntimeStatus(runtimeData);
   }
 
   async function refresh() {
@@ -189,7 +193,7 @@ function App() {
         </header>
         {error && <div className="form-error global-error">{error}<button onClick={() => setError('')}>Закрыть</button></div>}
         {issuedToken && <section className="token-notice"><b>Токен подписки создан</b><p>Он показан только сейчас и пока не подключён к рабочему endpoint. Сохрани его для дальнейшей интеграции.</p><code>{issuedToken}</code><button className="secondary" onClick={() => setIssuedToken('')}>Скрыть</button></section>}
-        <section className="notice"><b>Preview runtime</b><p>Сейчас панель сохраняет конфигурации и клиентов в SQLite. Реальные VPN-процессы и Docker-контейнеры пока не запускаются — это следующий этап.</p></section>
+        <section className="notice"><b>{runtimeStatus?.mode === 'preview' ? 'Preview runtime' : 'Runtime'}</b><p>{runtimeStatus?.message ?? 'Статус runtime пока недоступен.'}</p><small>Движок: {runtimeStatus?.engine ?? '—'} · Управление VPN: {runtimeStatus?.can_manage_vpn ? 'доступно' : 'не подключено'}</small></section>
         <section className="stats">
           <article><label>VPN-КОНФИГУРАЦИИ</label><strong>{containers.length}</strong><span>Записей в локальной БД</span></article>
           <article><label>КЛИЕНТЫ</label><strong>{clientCount}</strong><span>{enabledCount} включено</span></article>
