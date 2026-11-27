@@ -33,6 +33,24 @@ pub fn encrypt_private_key(master_key: &[u8; 32], private_key: &[u8; 32]) -> Res
     Ok(stored)
 }
 
+/// Decrypt a stored private key for an authorized configuration-export path.
+/// Plaintext buffers are zeroized when dropped.
+pub fn decrypt_private_key(master_key: &[u8; 32], stored: &[u8]) -> Result<Zeroizing<[u8; 32]>, &'static str> {
+    if stored.len() < 12 + 16 {
+        return Err("Encrypted WireGuard private key is truncated");
+    }
+    let cipher = ChaCha20Poly1305::new_from_slice(master_key)
+        .map_err(|_| "Invalid WireGuard master key")?;
+    let nonce = Nonce::from_slice(&stored[..12]);
+    let plaintext = Zeroizing::new(
+        cipher.decrypt(nonce, &stored[12..])
+            .map_err(|_| "Could not authenticate encrypted WireGuard private key")?
+    );
+    let key: [u8; 32] = plaintext.as_slice().try_into()
+        .map_err(|_| "Decrypted WireGuard private key has an invalid length")?;
+    Ok(Zeroizing::new(key))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,6 +75,9 @@ mod tests {
         let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
         let nonce = Nonce::from_slice(&first[..12]);
         assert_eq!(cipher.decrypt(nonce, &first[12..]).unwrap().as_slice(), &[0x42u8; 32]);
+        let decrypted = decrypt_private_key(&key, &first).unwrap();
+        assert_eq!(decrypted.as_ref(), &[0x42u8; 32]);
+        assert!(decrypt_private_key(&[8u8; 32], &first).is_err());
         let mut tampered = first.clone();
         *tampered.last_mut().unwrap() ^= 1;
         assert!(cipher.decrypt(nonce, &tampered[12..]).is_err());
