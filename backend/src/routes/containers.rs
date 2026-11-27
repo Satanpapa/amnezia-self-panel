@@ -276,19 +276,21 @@ pub async fn update_awg_profile(
     let settings_json = serde_json::to_string(&input.settings)
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not serialize AWG settings"))?;
 
+    let mut tx = state.pool.begin().await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not begin profile update"))?;
     let result = sqlx::query(
         "UPDATE protocol_containers SET awg_settings_json = ?, revision = revision + 1 WHERE id = ? AND protocol = 'amnezia-awg' AND revision = ?"
     )
     .bind(settings_json)
     .bind(&container_id)
     .bind(input.expected_revision)
-    .execute(&state.pool).await
+    .execute(&mut *tx).await
     .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not update AWG profile"))?;
 
     if result.rows_affected() == 0 {
         let exists = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM protocol_containers WHERE id = ? AND protocol = 'amnezia-awg'"
-        ).bind(&container_id).fetch_one(&state.pool).await
+        ).bind(&container_id).fetch_one(&mut *tx).await
             .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
         if exists == 0 {
             return Err((StatusCode::NOT_FOUND, "AmneziaWG profile not found"));
@@ -301,8 +303,11 @@ pub async fn update_awg_profile(
         "revision": input.expected_revision + 1,
         "runtime_applied": false
     }).to_string();
-    let _ = sqlx::query("INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'awg.profile.updated', ?)")
-        .bind(admin_id).bind(details).execute(&state.pool).await;
+    sqlx::query("INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'awg.profile.updated', ?)")
+        .bind(admin_id).bind(details).execute(&mut *tx).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not record profile update"))?;
+    tx.commit().await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not commit profile update"))?;
 
     let item = sqlx::query_as::<_, ContainerRecord>(
         "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json FROM protocol_containers WHERE id = ?"
