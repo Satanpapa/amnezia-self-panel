@@ -17,7 +17,9 @@ Self-hosted control plane for AmneziaWG, WireGuard, OpenVPN and OpenVPN over Clo
 - [x] Login, session check and logout endpoints.
 - [x] React setup/login screens connected to the API.
 - [x] GitHub Actions: Rust `cargo check` + `cargo test`, frontend production build.
-- [ ] Preview runtime and Docker adapter.
+- [x] Preview data model for protocol containers and clients.
+- [x] Container/client CRUD foundations, IPv4 allocation and one-time subscription token issuance (preview only).
+- [ ] Real preview runtime adapter and Docker adapter.
 - [ ] VPN protocol/container lifecycle.
 - [ ] Client/peer management and configuration export.
 - [ ] Traffic accounting, quotas and subscription URLs.
@@ -56,6 +58,10 @@ Open the Vite URL (normally http://127.0.0.1:5173). The dev server proxies `/api
 - `POST /api/auth/login`
 - `GET /api/auth/me`
 - `POST /api/auth/logout`
+- `GET /api/containers` / `POST /api/containers`
+- `POST /api/containers/:container_id/clients`
+- `GET /api/clients`
+- `POST /api/clients/:client_id/disable`
 
 The initial admin password must be 12-256 characters. Usernames are 3-32 ASCII letters, digits, underscore or hyphen.
 
@@ -65,6 +71,7 @@ The initial admin password must be 12-256 characters. Usernames are 3-32 ASCII l
 - Set `COOKIE_SECURE=true` when serving over HTTPS.
 - Use HTTPS in production; do not expose the development server directly to the Internet.
 - The initial version does not yet include login rate limiting, full CSRF defenses, password reset or multi-user roles.
+- Container/client records are preview metadata only. No WireGuard keys, peer configs, running VPN process, Docker container or subscription download is created yet.
 - VPN key generation, `vpn://` serialization and Docker execution are not production-ready until verified against official Amnezia/WireGuard behavior.
 
 ## Project docs
