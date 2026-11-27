@@ -88,7 +88,7 @@ The initial admin password must be 12-256 characters. Usernames are 3-32 ASCII l
 - Use HTTPS in production; do not expose the development server directly to the Internet.
 - The initial version does not yet include login rate limiting, full CSRF defenses, password reset or multi-user roles.
 - Container records and runtime remain preview-only. WireGuard/AmneziaWG client keypairs are generated and private keys are encrypted at rest, but peers are not installed into a running VPN interface and no working client configuration or subscription download is produced yet.
-- Curve25519 keypair generation and authenticated encryption at rest are implemented. Private key export/decryption, actual peer installation/revocation, `vpn://` serialization and Docker execution are not implemented yet.
+- Curve25519 keypair generation and authenticated encryption at rest are implemented. The authenticated decryption primitive is implemented with zeroizing plaintext buffers, but no client-facing private-key export/config endpoint exists yet. Actual peer installation/revocation, `vpn://` serialization and Docker execution are not implemented yet.
 
 ## Runtime architecture
 
