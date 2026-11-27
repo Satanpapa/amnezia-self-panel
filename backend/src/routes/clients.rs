@@ -29,6 +29,7 @@ pub struct ClientRecord {
     pub traffic_used_bytes: i64,
     pub expires_at: Option<String>,
     pub created_at: String,
+    pub wireguard_public_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -69,7 +70,7 @@ pub async fn list(
     authenticated_admin(&state, &jar).await?;
     let items = if let Some(container_id) = query.container_id {
         sqlx::query_as::<_, ClientRecord>(
-            "SELECT id, container_id, name, note, assigned_ip, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at FROM clients WHERE container_id = ? ORDER BY created_at DESC"
+            "SELECT id, container_id, name, note, assigned_ip, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, wireguard_public_key FROM clients WHERE container_id = ? ORDER BY created_at DESC"
         ).bind(container_id).fetch_all(&state.pool).await
     } else {
         sqlx::query_as::<_, ClientRecord>(
@@ -105,12 +106,24 @@ pub async fn create(
         }
     }
 
-    let row = sqlx::query("SELECT subnet FROM protocol_containers WHERE id = ?")
+    let row = sqlx::query("SELECT subnet, protocol FROM protocol_containers WHERE id = ?")
         .bind(&container_id).fetch_optional(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?
         .ok_or((StatusCode::NOT_FOUND, "Container not found"))?;
     let subnet_text: String = sqlx::Row::try_get(&row, "subnet")
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
+    let protocol: String = sqlx::Row::try_get(&row, "protocol")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
+    let keypair = if protocol == "amnezia-awg" || protocol == "wireguard" {
+        let master_key = state.wireguard_master_key.as_ref()
+            .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Set WIREGUARD_MASTER_KEY before creating WireGuard or AmneziaWG clients"))?;
+        let (private_key, public_key) = crate::security::wireguard_keys::generate_keypair();
+        let encrypted = crate::security::wireguard_keys::encrypt_private_key(master_key, &private_key)
+            .map_err(|message| (StatusCode::INTERNAL_SERVER_ERROR, message))?;
+        Some((public_key, encrypted))
+    } else {
+        None
+    };
     let subnet = Ipv4Net::from_str(&subnet_text)
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Stored subnet is invalid"))?;
 
@@ -131,12 +144,16 @@ pub async fn create(
     let id = Uuid::new_v4().to_string();
     let subscription_token = new_session_token();
     let token_hash = hash_session_token(&subscription_token);
+    let (public_key, encrypted_private_key) = match keypair {
+        Some((public_key, encrypted)) => (Some(public_key), Some(encrypted)),
+        None => (None, None),
+    };
     sqlx::query(
-        "INSERT INTO clients (id, container_id, name, note, assigned_ip, enabled, subscription_token_hash, traffic_limit_bytes, expires_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)"
+        "INSERT INTO clients (id, container_id, name, note, assigned_ip, enabled, subscription_token_hash, traffic_limit_bytes, expires_at, wireguard_public_key, wireguard_private_key_encrypted) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)"
     )
     .bind(&id).bind(&container_id).bind(name).bind(note.trim())
     .bind(assigned_ip.to_string()).bind(token_hash).bind(traffic_limit)
-    .bind(input.expires_at).execute(&state.pool).await
+    .bind(input.expires_at).bind(&public_key).bind(&encrypted_private_key).execute(&state.pool).await
     .map_err(|error| {
         if let sqlx::Error::Database(db_error) = &error {
             if db_error.is_unique_violation() {
@@ -159,7 +176,7 @@ pub async fn create(
     Ok(Json(CreateClientResponse {
         item,
         subscription_token,
-        notice: "Token is shown once. VPN keys and a working subscription endpoint will be added in a later step.",
+        notice: "Subscription token is shown once. WireGuard private keys are encrypted at rest; runtime peer activation and config export are not implemented yet.",
     }))
 }
 
