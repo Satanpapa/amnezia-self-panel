@@ -36,6 +36,7 @@ pub fn encrypt_private_key(master_key: &[u8; 32], private_key: &[u8; 32]) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chacha20poly1305::aead::Aead as _;
 
     #[test]
     fn generates_valid_base64_curve25519_keypair() {
@@ -55,7 +56,7 @@ mod tests {
         assert!(first.len() > 12 + 16);
         let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
         let nonce = Nonce::from_slice(&first[..12]);
-        assert_eq!(cipher.decrypt(nonce, &first[12..]).unwrap(), [0x42u8; 32]);
+        assert_eq!(cipher.decrypt(nonce, &first[12..]).unwrap().as_slice(), &[0x42u8; 32]);
         let mut tampered = first.clone();
         *tampered.last_mut().unwrap() ^= 1;
         assert!(cipher.decrypt(nonce, &tampered[12..]).is_err());
