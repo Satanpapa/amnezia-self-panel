@@ -16,6 +16,7 @@ Self-hosted control plane for AmneziaWG, WireGuard, OpenVPN and OpenVPN over Clo
 - [x] Opaque random session token in HttpOnly cookie; only its SHA-256 hash is stored.
 - [x] Login, session check and logout endpoints.
 - [x] React setup/login screens connected to the API.
+- [x] GitHub Actions: Rust `cargo check` + `cargo test`, frontend production build.
 - [ ] Preview runtime and Docker adapter.
 - [ ] VPN protocol/container lifecycle.
 - [ ] Client/peer management and configuration export.
