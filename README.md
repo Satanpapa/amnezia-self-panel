@@ -5,7 +5,7 @@ Self-hosted control plane for AmneziaWG, WireGuard, OpenVPN and OpenVPN over Clo
 **Current stack**
 - Backend: Rust, Tokio, Axum, SQLx, SQLite, Argon2id.
 - Frontend: React, TypeScript, Vite.
-- Deployment target: Linux VPS with Docker runtime (not implemented yet).
+- Deployment target: Linux VPS; read-only Docker daemon probe is implemented, container lifecycle is not.
 
 ## Current progress
 
@@ -20,7 +20,8 @@ Self-hosted control plane for AmneziaWG, WireGuard, OpenVPN and OpenVPN over Clo
 - [x] Preview data model for protocol containers and clients.
 - [x] Container/client CRUD foundations, IPv4 allocation and one-time subscription token issuance (preview only).
 - [x] RuntimeAdapter boundary and safe PreviewRuntime implementation.
-- [ ] Docker Engine adapter and real container lifecycle.
+- [x] Docker Engine connectivity adapter (read-only health probe).
+- [ ] Docker container create/start/stop/remove lifecycle.
 - [ ] VPN protocol/peer lifecycle and configuration export.
 - [ ] Traffic accounting, quotas and subscription URLs.
 
@@ -36,7 +37,7 @@ cp .env.example .env
 cargo run
 ```
 
-The API binds to `127.0.0.1:4000` by default and creates `data/amnezia-panel.db`.
+The API binds to `127.0.0.1:4000` by default and creates `data/amnezia-panel.db`. `RUNTIME_MODE=preview` is the safe default. Set `RUNTIME_MODE=docker` to enable a read-only Docker daemon health check.
 
 ### Frontend
 
@@ -77,7 +78,7 @@ The initial admin password must be 12-256 characters. Usernames are 3-32 ASCII l
 
 ## Runtime architecture
 
-The HTTP layer depends on a `RuntimeAdapter` trait rather than directly invoking Docker or shell commands. The currently wired `PreviewRuntime` reports metadata-only mode and explicitly returns `can_manage_vpn=false`. A Docker implementation will be added behind the same boundary after its lifecycle and failure behavior are covered by tests.
+The HTTP layer depends on a `RuntimeAdapter` trait rather than directly invoking Docker or shell commands. `PreviewRuntime` reports metadata-only mode. `DockerRuntime` uses Bollard to ping the local Docker daemon with a three-second timeout. Both report `can_manage_vpn=false`: the panel does not yet create, start, stop, or remove VPN containers. Docker socket access is highly privileged; do not expose the API publicly or mount the socket into an untrusted container.
 
 ## Project docs
 
