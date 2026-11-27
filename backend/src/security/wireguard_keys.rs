@@ -1,0 +1,60 @@
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use chacha20poly1305::{
+    aead::{Aead, KeyInit},
+    ChaCha20Poly1305, Nonce,
+};
+use rand_core::{OsRng, RngCore};
+use x25519_dalek::{PublicKey, StaticSecret};
+
+/// Generate a WireGuard-compatible Curve25519 keypair.
+pub fn generate_keypair() -> (String, String) {
+    let secret = StaticSecret::random_from_rng(OsRng);
+    let public = PublicKey::from(&secret);
+    (
+        STANDARD.encode(secret.to_bytes()),
+        STANDARD.encode(public.as_bytes()),
+    )
+}
+
+/// Encrypt a private key with an installation master key.
+/// Stored format: 12-byte random nonce || authenticated ciphertext.
+pub fn encrypt_private_key(master_key: &[u8; 32], private_key_b64: &str) -> Result<Vec<u8>, &'static str> {
+    let cipher = ChaCha20Poly1305::new(master_key.into());
+    let mut nonce_bytes = [0u8; 12];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher.encrypt(nonce, private_key_b64.as_bytes())
+        .map_err(|_| "Could not encrypt WireGuard private key")?;
+    let mut stored = Vec::with_capacity(nonce_bytes.len() + ciphertext.len());
+    stored.extend_from_slice(&nonce_bytes);
+    stored.extend_from_slice(&ciphertext);
+    Ok(stored)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chacha20poly1305::aead::Aead;
+
+    #[test]
+    fn generates_valid_base64_curve25519_keypair() {
+        let (private, public) = generate_keypair();
+        assert_eq!(STANDARD.decode(private).unwrap().len(), 32);
+        assert_eq!(STANDARD.decode(public).unwrap().len(), 32);
+    }
+
+    #[test]
+    fn encrypts_with_random_nonce_and_authentication() {
+        let key = [7u8; 32];
+        let first = encrypt_private_key(&key, "private-key-material").unwrap();
+        let second = encrypt_private_key(&key, "private-key-material").unwrap();
+        assert_ne!(first, second);
+        assert!(first.len() > 12 + 16);
+        let cipher = ChaCha20Poly1305::new((&key).into());
+        let nonce = Nonce::from_slice(&first[..12]);
+        assert_eq!(cipher.decrypt(nonce, &first[12..]).unwrap(), b"private-key-material");
+        let mut tampered = first.clone();
+        *tampered.last_mut().unwrap() ^= 1;
+        assert!(cipher.decrypt(nonce, &tampered[12..]).is_err());
+    }
+}
