@@ -1,33 +1,72 @@
 # Amnezia Panel
 
-Self-hosted control panel for AmneziaWG, WireGuard and OpenVPN. Проект находится на ранней стадии разработки.
+Self-hosted control plane for AmneziaWG, WireGuard, OpenVPN and OpenVPN over Cloak.
 
-## Статус
+**Current stack**
+- Backend: Rust, Tokio, Axum, SQLx, SQLite, Argon2id.
+- Frontend: React, TypeScript, Vite.
+- Deployment target: Linux VPS with Docker runtime (not implemented yet).
 
-Начальный каркас: монорепозиторий с TypeScript/Express API и React/Vite UI. Пока нет production-интеграции с Docker, официальными контейнерами Amnezia или подтверждённой совместимости формата `vpn://`.
+## Current progress
 
-## План
+- [x] Rust API bootstrap and SQLite migrations.
+- [x] Health endpoint.
+- [x] First-run administrator setup (one administrator, one-time setup).
+- [x] Argon2id password hashing.
+- [x] Opaque random session token in HttpOnly cookie; only its SHA-256 hash is stored.
+- [x] Login, session check and logout endpoints.
+- [x] React setup/login screens connected to the API.
+- [ ] Preview runtime and Docker adapter.
+- [ ] VPN protocol/container lifecycle.
+- [ ] Client/peer management and configuration export.
+- [ ] Traffic accounting, quotas and subscription URLs.
 
-Полный перевод исходного плана: [`ПЛАН-РАЗРАБОТКИ.md`](./ПЛАН-РАЗРАБОТКИ.md).
+## Run locally
 
-## Структура
+Requirements: Rust stable toolchain, Node.js 22+, npm.
 
-- `server/` — API, авторизация, криптография и runtime-адаптеры.
-- `web/` — React-интерфейс.
-- `deploy/` — будущие Docker и VPS-установочные файлы.
-
-## Разработка
-
-Требуется Node.js 22+ и npm.
+### Backend
 
 ```bash
-cd server && npm install && npm run dev
+cd backend
+cp .env.example .env
+cargo run
 ```
 
-В другом терминале:
+The API binds to `127.0.0.1:4000` by default and creates `data/amnezia-panel.db`.
+
+### Frontend
+
+In another terminal:
 
 ```bash
-cd web && npm install && npm run dev
+cd web
+npm install
+npm run dev
 ```
 
-Не выставляйте API наружу до настройки TLS, секретов, ограничений доступа и проверки безопасности.
+Open the Vite URL (normally http://127.0.0.1:5173). The dev server proxies `/api` requests to the Rust API.
+
+## API
+
+- `GET /api/health`
+- `GET /api/setup/status`
+- `POST /api/setup/initialize`
+- `POST /api/auth/login`
+- `GET /api/auth/me`
+- `POST /api/auth/logout`
+
+The initial admin password must be 12-256 characters. Usernames are 3-32 ASCII letters, digits, underscore or hyphen.
+
+## Security notes
+
+- The API binds to loopback by default. Keep it behind a trusted reverse proxy.
+- Set `COOKIE_SECURE=true` when serving over HTTPS.
+- Use HTTPS in production; do not expose the development server directly to the Internet.
+- The initial version does not yet include login rate limiting, full CSRF defenses, password reset or multi-user roles.
+- VPN key generation, `vpn://` serialization and Docker execution are not production-ready until verified against official Amnezia/WireGuard behavior.
+
+## Project docs
+
+- [Russian development plan](./ПЛАН-РАЗРАБОТКИ.md)
+- [Backend architecture decisions](./docs/TECH-STACK.md)
