@@ -50,6 +50,14 @@ pub struct CreateContainerResponse {
     notice: &'static str,
 }
 
+fn subnets_overlap(left: Ipv4Net, right: Ipv4Net) -> bool {
+    let left_start = u32::from(left.network());
+    let left_end = u32::from(left.broadcast());
+    let right_start = u32::from(right.network());
+    let right_end = u32::from(right.broadcast());
+    left_start <= right_end && right_start <= left_end
+}
+
 pub async fn list(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -96,6 +104,18 @@ pub async fn create(
         return Err((StatusCode::BAD_REQUEST, "Subnet size must be between /16 and /30"));
     }
 
+    // Different VPN instances must not allocate addresses from overlapping pools.
+    let existing_subnets = sqlx::query_scalar::<_, String>("SELECT subnet FROM protocol_containers")
+        .fetch_all(&state.pool).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not check existing subnets"))?;
+    for existing in existing_subnets {
+        let existing = Ipv4Net::from_str(&existing)
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "An existing container has an invalid subnet"))?;
+        if subnets_overlap(subnet, existing) {
+            return Err((StatusCode::CONFLICT, "Subnet overlaps with another VPN container"));
+        }
+    }
+
     let id = Uuid::new_v4().to_string();
     let result = sqlx::query(
         "INSERT INTO protocol_containers (id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu) VALUES (?, ?, ?, 'preview', ?, ?, ?, ?, ?, ?)"
@@ -129,4 +149,29 @@ pub async fn create(
         runtime_mode: "preview",
         notice: "Saved to the local database. No VPN process or Docker container has been started.",
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::subnets_overlap;
+    use std::str::FromStr;
+    use ipnet::Ipv4Net;
+
+    #[test]
+    fn rejects_identical_and_nested_subnets() {
+        let a = Ipv4Net::from_str("10.20.0.0/24").unwrap();
+        let same = Ipv4Net::from_str("10.20.0.0/24").unwrap();
+        let nested = Ipv4Net::from_str("10.20.0.128/25").unwrap();
+        assert!(subnets_overlap(a, same));
+        assert!(subnets_overlap(a, nested));
+    }
+
+    #[test]
+    fn allows_adjacent_and_disjoint_subnets() {
+        let a = Ipv4Net::from_str("10.20.0.0/24").unwrap();
+        let adjacent = Ipv4Net::from_str("10.20.1.0/24").unwrap();
+        let distant = Ipv4Net::from_str("192.168.10.0/24").unwrap();
+        assert!(!subnets_overlap(a, adjacent));
+        assert!(!subnets_overlap(a, distant));
+    }
 }
