@@ -73,7 +73,7 @@ impl RuntimeAdapter for DockerRuntime {
 
         let ping = tokio::time::timeout(Duration::from_secs(3), docker.ping()).await;
         let (available, message) = match ping {
-            Ok(Ok(())) => (
+            Ok(Ok(_)) => (
                 true,
                 "Docker daemon is reachable. VPN container lifecycle is not enabled yet.".to_string(),
             ),
