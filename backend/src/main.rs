@@ -1,14 +1,15 @@
 mod state;
 mod routes;
 mod security;
+mod runtime;
 
-use std::{env, net::SocketAddr, path::Path, str::FromStr};
+use std::{env, net::SocketAddr, path::Path, str::FromStr, sync::Arc};
 use axum::{routing::get, Router};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tower_http::{cors::{Any, CorsLayer}, limit::RequestBodyLimitLayer, trace::TraceLayer};
 use tracing_subscriber::EnvFilter;
 
-use crate::{routes::{auth, clients, containers, setup, system}, state::AppState};
+use crate::{routes::{auth, clients, containers, runtime as runtime_routes, setup, system}, runtime::PreviewRuntime, state::AppState};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -35,6 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = AppState {
         pool,
         cookie_secure: env::var("COOKIE_SECURE").map(|v| v == "true").unwrap_or(false),
+        runtime: Arc::new(PreviewRuntime),
     };
 
     let app = Router::new()
@@ -44,6 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/auth/login", axum::routing::post(auth::login))
         .route("/api/auth/logout", axum::routing::post(auth::logout))
         .route("/api/auth/me", get(auth::me))
+        .route("/api/runtime/status", get(runtime_routes::status))
         .route("/api/containers", get(containers::list).post(containers::create))
         .route("/api/containers/{container_id}/clients", axum::routing::post(clients::create))
         .route("/api/clients", get(clients::list))
