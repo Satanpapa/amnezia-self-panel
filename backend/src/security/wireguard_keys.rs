@@ -19,7 +19,8 @@ pub fn generate_keypair() -> (String, String) {
 /// Encrypt a private key with an installation master key.
 /// Stored format: 12-byte random nonce || authenticated ciphertext.
 pub fn encrypt_private_key(master_key: &[u8; 32], private_key_b64: &str) -> Result<Vec<u8>, &'static str> {
-    let cipher = ChaCha20Poly1305::new(master_key.into());
+    let cipher = ChaCha20Poly1305::new_from_slice(master_key)
+        .map_err(|_| "Invalid WireGuard master key")?;
     let mut nonce_bytes = [0u8; 12];
     OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
@@ -34,7 +35,6 @@ pub fn encrypt_private_key(master_key: &[u8; 32], private_key_b64: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chacha20poly1305::aead::Aead;
 
     #[test]
     fn generates_valid_base64_curve25519_keypair() {
@@ -50,7 +50,7 @@ mod tests {
         let second = encrypt_private_key(&key, "private-key-material").unwrap();
         assert_ne!(first, second);
         assert!(first.len() > 12 + 16);
-        let cipher = ChaCha20Poly1305::new((&key).into());
+        let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
         let nonce = Nonce::from_slice(&first[..12]);
         assert_eq!(cipher.decrypt(nonce, &first[12..]).unwrap(), b"private-key-material");
         let mut tampered = first.clone();
