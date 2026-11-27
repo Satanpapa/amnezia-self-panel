@@ -19,3 +19,20 @@ pub fn verify_password(password: &str, encoded_hash: &str) -> bool {
         .verify_password(password.as_bytes(), &parsed_hash)
         .is_ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{hash_password, verify_password};
+
+    #[test]
+    fn verifies_the_original_password() {
+        let hash = hash_password("a-long-test-password").expect("hash should be created");
+        assert!(verify_password("a-long-test-password", &hash));
+        assert!(!verify_password("a-different-password", &hash));
+    }
+
+    #[test]
+    fn rejects_malformed_hashes() {
+        assert!(!verify_password("anything", "not-a-password-hash"));
+    }
+}
