@@ -18,7 +18,7 @@ pub fn generate_keypair() -> (Zeroizing<[u8; 32]>, String) {
 }
 
 /// Encrypt a private key with an installation master key.
-/// Stored format: 12-byte random nonce || authenticated ciphertext.
+/// Stored format: version tag || 12-byte random nonce || authenticated ciphertext.
 pub fn encrypt_private_key(master_key: &[u8; 32], private_key: &[u8; 32]) -> Result<Vec<u8>, &'static str> {
     let cipher = ChaCha20Poly1305::new_from_slice(master_key)
         .map_err(|_| "Invalid WireGuard master key")?;
