@@ -116,3 +116,5 @@ footer{margin-top:29px;color:#63758d;font:9px 'DM Mono',monospace;letter-spacing
 @media(max-width:600px){.container-bottom{align-items:flex-start;flex-direction:column}.card-actions{width:100%}}
 
 .editor-form input:disabled,.editor-form select:disabled{opacity:.52;cursor:not-allowed;background:#111a27}
+
+.public-key-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px}.public-key-line code{font-size:10px;color:#8aa7b8}.text-action{border:0;background:transparent;color:#62cbbd;font-size:10px;padding:0;cursor:pointer}.text-action:hover{text-decoration:underline}
