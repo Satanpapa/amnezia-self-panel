@@ -287,18 +287,18 @@ function App() {
         </>}
 
         {section === 'protocols' && <section className="panel">
-          <div className="panel-head"><div><small>PROTOCOL LAB</small><h2>Серверные профили</h2></div><button className="primary compact" onClick={() => setShowContainerForm(v => !v)}>{showContainerForm ? 'Закрыть редактор' : '＋ Новый профиль'}</button></div>
+          <div className="panel-head"><div><small>PROTOCOL LAB</small><h2>Серверные профили</h2></div><button className="primary compact" onClick={() => { setShowContainerForm(v => !v); setEditingAwgId(null); }}>{showContainerForm ? 'Закрыть редактор' : '＋ Новый профиль'}</button></div>
           <p className="section-lead">Параметры сохраняются в базе и проходят серверную валидацию. Фактический запуск интерфейса VPN пока не включён.</p>
           {showContainerForm && <form className="editor-form" onSubmit={createContainer}>
             <div className="form-section-title">{editingAwgId ? 'РЕДАКТИРОВАНИЕ AWG · БАЗОВЫЕ ПАРАМЕТРЫ НЕ ИЗМЕНЯЮТСЯ' : '01 / БАЗОВЫЕ ПАРАМЕТРЫ'}</div>
-            <label>Название<input required minLength={2} maxLength={48} value={containerDraft.name} onChange={e => setContainerDraft({...containerDraft,name:e.target.value})} placeholder="Например, Finland AWG" /></label>
-            <label>Протокол<select value={containerDraft.protocol} onChange={e => setContainerDraft({...containerDraft,protocol:e.target.value})}><option value="amnezia-awg">AmneziaWG</option><option value="wireguard">WireGuard</option><option value="openvpn">OpenVPN</option><option value="openvpn-cloak">OpenVPN + Cloak</option></select></label>
-            <label>Домен / IP сервера<input required value={containerDraft.endpoint} onChange={e => setContainerDraft({...containerDraft,endpoint:e.target.value})} placeholder="vpn.example.com" /></label>
-            <label>Порт<input type="number" min="1" max="65535" required value={containerDraft.listen_port} onChange={e => setContainerDraft({...containerDraft,listen_port:e.target.value})} /></label>
-            <label>Транспорт<select value={containerDraft.transport} onChange={e => setContainerDraft({...containerDraft,transport:e.target.value})}><option value="udp">UDP</option><option value="tcp">TCP</option></select></label>
-            <label>Подсеть IPv4<input required value={containerDraft.subnet} onChange={e => setContainerDraft({...containerDraft,subnet:e.target.value})} /></label>
-            <label>DNS-сервер<input required value={containerDraft.dns} onChange={e => setContainerDraft({...containerDraft,dns:e.target.value})} /></label>
-            <label>MTU<input type="number" min="576" max="9000" required value={containerDraft.mtu} onChange={e => setContainerDraft({...containerDraft,mtu:e.target.value})} /></label>
+            <label>Название<input required minLength={2} maxLength={48} disabled={!!editingAwgId} value={containerDraft.name} onChange={e => setContainerDraft({...containerDraft,name:e.target.value})} placeholder="Например, Finland AWG" /></label>
+            <label>Протокол<select disabled={!!editingAwgId} value={containerDraft.protocol} onChange={e => setContainerDraft({...containerDraft,protocol:e.target.value})}><option value="amnezia-awg">AmneziaWG</option><option value="wireguard">WireGuard</option><option value="openvpn">OpenVPN</option><option value="openvpn-cloak">OpenVPN + Cloak</option></select></label>
+            <label>Домен / IP сервера<input required disabled={!!editingAwgId} value={containerDraft.endpoint} onChange={e => setContainerDraft({...containerDraft,endpoint:e.target.value})} placeholder="vpn.example.com" /></label>
+            <label>Порт<input type="number" min="1" max="65535" required disabled={!!editingAwgId} value={containerDraft.listen_port} onChange={e => setContainerDraft({...containerDraft,listen_port:e.target.value})} /></label>
+            <label>Транспорт<select disabled={!!editingAwgId} value={containerDraft.transport} onChange={e => setContainerDraft({...containerDraft,transport:e.target.value})}><option value="udp">UDP</option><option value="tcp">TCP</option></select></label>
+            <label>Подсеть IPv4<input required disabled={!!editingAwgId} value={containerDraft.subnet} onChange={e => setContainerDraft({...containerDraft,subnet:e.target.value})} /></label>
+            <label>DNS-сервер<input required disabled={!!editingAwgId} value={containerDraft.dns} onChange={e => setContainerDraft({...containerDraft,dns:e.target.value})} /></label>
+            <label>MTU<input type="number" min="576" max="9000" required disabled={!!editingAwgId} value={containerDraft.mtu} onChange={e => setContainerDraft({...containerDraft,mtu:e.target.value})} /></label>
             {containerDraft.protocol === 'amnezia-awg' && <>
               <div className="form-section-title awg-title">02 / AMNEZIAWG OBFUSCATION STUDIO <span>ADVANCED</span></div>
               <div className="awg-intro">Junk packets, padding и magic headers меняют сигнатуру трафика. Клиентские и серверные значения должны быть согласованы. Это профиль настроек, не гарантия обхода DPI.</div>
