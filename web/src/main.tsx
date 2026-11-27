@@ -56,7 +56,7 @@ function App() {
   const [actionBusy, setActionBusy] = useState(false);
 
   async function loadWorkspace() {
-    const [containerData, clientData] = await Promise.all([
+    const [containerData, clientData, runtimeData] = await Promise.all([
       api<ListResponse<Container>>('/api/containers'),
       api<ListResponse<Client>>('/api/clients'),
       api<RuntimeStatus>('/api/runtime/status'),
