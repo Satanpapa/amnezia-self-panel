@@ -51,7 +51,7 @@ mod tests {
     fn encrypts_with_random_nonce_and_authentication() {
         let key = [7u8; 32];
         let first = encrypt_private_key(&key, &[0x42u8; 32]).unwrap();
-        let second = encrypt_private_key(&key, "private-key-material").unwrap();
+        let second = encrypt_private_key(&key, &[0x42u8; 32]).unwrap();
         assert_ne!(first, second);
         assert!(first.len() > 12 + 16);
         let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
