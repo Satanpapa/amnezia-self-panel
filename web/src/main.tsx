@@ -21,6 +21,7 @@ type Container = {
 type Client = {
   id: string; container_id: string; name: string; note: string; assigned_ip: string;
   enabled: boolean; traffic_limit_bytes: number; traffic_used_bytes: number; expires_at: string | null;
+  wireguard_public_key?: string | null;
 };
 type ListResponse<T> = { items: T[] };
 type CreatedClient = { item: Client; subscription_token: string; notice: string };
@@ -338,7 +339,7 @@ function App() {
               {filteredClients.map(client => {
                 const owner = containers.find(c => c.id === client.container_id);
                 return <div className="client-row" key={client.id}>
-                  <span><b>{client.name}</b><small>{client.note || owner?.name || 'Без заметки'}</small></span>
+                  <span><b>{client.name}</b><small>{client.note || owner?.name || 'Без заметки'}</small>{client.wireguard_public_key && <small className="public-key-line"><code title={client.wireguard_public_key}>{client.wireguard_public_key.slice(0, 18)}…</code><button className="text-action" onClick={() => void navigator.clipboard.writeText(client.wireguard_public_key!)}>Копировать public key</button></small>}</span>
                   <code>{client.assigned_ip}</code><span className="protocol-cell">{protocolNames[owner?.protocol ?? ''] ?? '—'}</span>
                   <span className={client.enabled ? 'status-enabled' : 'status-disabled'}>{client.enabled ? '● Включён' : '○ Отключён'}</span>
                   <span>{client.enabled && <button className="danger compact" disabled={actionBusy} onClick={() => void disableClient(client.id)}>Отозвать</button>}</span>
