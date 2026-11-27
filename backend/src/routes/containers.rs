@@ -254,7 +254,7 @@ pub async fn create(
     }
 
     let item = sqlx::query_as::<_, ContainerRecord>(
-        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json FROM protocol_containers WHERE id = ?"
+        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key FROM protocol_containers WHERE id = ?"
     ).bind(&id).fetch_one(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read saved container"))?;
 
@@ -325,7 +325,7 @@ pub async fn update_awg_profile(
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not commit profile update"))?;
 
     let item = sqlx::query_as::<_, ContainerRecord>(
-        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json FROM protocol_containers WHERE id = ?"
+        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key FROM protocol_containers WHERE id = ?"
     ).bind(&container_id).fetch_one(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read updated profile"))?;
     Ok(Json(item))
