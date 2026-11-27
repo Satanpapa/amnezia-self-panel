@@ -30,7 +30,7 @@ const emptyAwg = {
   version: '2.0', jc: '5', jmin: '8', jmax: '80', s1: '32', s2: '64',
   s3: '16', s4: '8', h1: '', h2: '', h3: '', h4: '',
   i1: '', i2: '', i3: '', i4: '', i5: '',
-  content_padding_addition: '', random_trailers: true, disable_cookies: true,
+  content_padding_addition: '', random_trailers: false, disable_cookies: false,
 };
 const protocolNames: Record<string, string> = {
   'amnezia-awg': 'AmneziaWG', wireguard: 'WireGuard', openvpn: 'OpenVPN', 'openvpn-cloak': 'OpenVPN + Cloak',
