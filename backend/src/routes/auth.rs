@@ -8,6 +8,30 @@ use crate::{security::{password::verify_password, session::{hash_session_token, 
 
 const COOKIE_NAME: &str = "amnezia_panel_session";
 
+pub async fn authenticated_admin(
+    state: &AppState,
+    jar: &CookieJar,
+) -> Result<(i64, String), StatusCode> {
+    let token = jar.get(COOKIE_NAME).map(|cookie| cookie.value())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let token_hash = hash_session_token(token);
+    let now = Utc::now().to_rfc3339();
+    let row = sqlx::query(
+        "SELECT admins.id, admins.username FROM sessions JOIN admins ON admins.id = sessions.admin_id WHERE sessions.token_hash = ? AND sessions.expires_at > ?"
+    )
+    .bind(token_hash)
+    .bind(now)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let admin_id: i64 = row.try_get("id").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let username: String = row.try_get("username").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok((admin_id, username))
+}
+
+
 #[derive(Deserialize)]
 pub struct LoginRequest {
     username: String,
@@ -52,17 +76,11 @@ pub async fn me(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<Json<AuthResponse>, StatusCode> {
-    let token = jar.get(COOKIE_NAME).map(|cookie| cookie.value())
-        .ok_or(StatusCode::UNAUTHORIZED)?;
-    let token_hash = hash_session_token(token);
-    let now = Utc::now().to_rfc3339();
-    let row = sqlx::query(
-        "SELECT admins.username FROM sessions JOIN admins ON admins.id = sessions.admin_id WHERE sessions.token_hash = ? AND sessions.expires_at > ?"
-    ).bind(token_hash).bind(now).fetch_optional(&state.pool).await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::UNAUTHORIZED)?;
-    let username: String = row.try_get("username").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(AuthResponse { authenticated: true, username: Some(username) }))
+    let (_, username) = authenticated_admin(&state, &jar).await?;
+    Ok(Json(AuthResponse {
+        authenticated: true,
+        username: Some(username),
+    }))
 }
 
 pub async fn logout(
