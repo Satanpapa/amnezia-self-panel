@@ -16,7 +16,7 @@ type AwgSettings = {
 type Container = {
   id: string; name: string; protocol: string; status: string; endpoint: string;
   listen_port: number; transport: string; subnet: string; dns: string; mtu: number;
-  revision: number; awg_settings_json: string;
+  revision: number; awg_settings_json: string; wireguard_server_public_key?: string | null;
 };
 type Client = {
   id: string; container_id: string; name: string; note: string; assigned_ip: string;
@@ -163,6 +163,15 @@ function App() {
     finally { setActionBusy(false); }
   }
 
+  async function provisionServerKey(containerId: string) {
+    setActionBusy(true); setError('');
+    try {
+      await api('/api/containers/' + containerId + '/wireguard-server-key', { method: 'POST', body: '{}' });
+      await loadWorkspace();
+    } catch (e) { setError(e instanceof Error ? e.message : 'Не удалось создать ключ сервера'); }
+    finally { setActionBusy(false); }
+  }
+
   async function createClient(event: FormEvent, containerId: string) {
     event.preventDefault(); setActionBusy(true); setError(''); setIssuedToken('');
     try {
@@ -202,7 +211,7 @@ function App() {
 
   function renderContainerCard(container: Container) {
     return <div key={container.id}>
-      <ContainerCard container={container} clients={clients} onEdit={() => beginAwgEdit(container)} onAdd={() => {
+      <ContainerCard container={container} clients={clients} onEdit={() => beginAwgEdit(container)} onProvisionKey={() => void provisionServerKey(container.id)} onAdd={() => {
         setClientFormFor(clientFormFor === container.id ? null : container.id);
         setClientName(''); setClientNote('');
       }} />
@@ -353,7 +362,7 @@ function App() {
   );
 }
 
-function ContainerCard({ container, clients, onAdd, onEdit }: { container: Container; clients: Client[]; onAdd: () => void; onEdit: () => void }) {
+function ContainerCard({ container, clients, onAdd, onEdit, onProvisionKey }: { container: Container; clients: Client[]; onAdd: () => void; onEdit: () => void; onProvisionKey: () => void }) {
   const related = clients.filter(client => client.container_id === container.id);
   let awg: Partial<AwgSettings> = {};
   try { awg = JSON.parse(container.awg_settings_json || '{}') as Partial<AwgSettings>; } catch {}
@@ -361,6 +370,7 @@ function ContainerCard({ container, clients, onAdd, onEdit }: { container: Conta
     <div className="container-top"><div><b>{container.name}</b><span className="protocol-tag">{protocolNames[container.protocol] ?? container.protocol}</span></div><span className="preview-tag">PREVIEW</span></div>
     <div className="container-meta"><span>⌖ {container.endpoint}:{container.listen_port}/{container.transport}</span><span>▦ {container.subnet}</span><span>DNS {container.dns}</span><span>MTU {container.mtu}</span></div>
     {container.protocol === 'amnezia-awg' && <div className="awg-summary"><span>AWG {awg.version ?? '—'}</span><span>Jc {awg.jc ?? '—'}</span><span>Junk {awg.jmin ?? '—'}–{awg.jmax ?? '—'} B</span><span>Headers {[awg.h1,awg.h2,awg.h3,awg.h4].filter(Boolean).length}/4</span></div>}
+    {(container.protocol === 'amnezia-awg' || container.protocol === 'wireguard') && <div className="server-key-row">{container.wireguard_server_public_key ? <><small>SERVER PUBLIC KEY</small><code title={container.wireguard_server_public_key}>{container.wireguard_server_public_key.slice(0, 22)}…</code><button className="text-action" onClick={() => void navigator.clipboard.writeText(container.wireguard_server_public_key!)}>Копировать</button></> : <><small>SERVER KEY NOT PROVISIONED</small><button className="secondary compact" onClick={onProvisionKey}>＋ Создать ключ сервера</button></>}</div>}
     <div className="container-bottom"><span>{related.length} устройств · ревизия {container.revision}</span><div className="card-actions">{container.protocol === 'amnezia-awg' && <button className="secondary compact" onClick={onEdit}>Настроить AWG</button>}<button className="secondary compact" onClick={onAdd}>＋ Добавить устройство</button></div></div>
   </article>;
 }
