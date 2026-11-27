@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(value) => {
             let decoded = hex::decode(value.trim())?;
             let key: [u8; 32] = decoded.try_into().map_err(|_| "WIREGUARD_MASTER_KEY must be exactly 64 hexadecimal characters")?;
-            Some(key)
+            Some(Arc::new(key))
         }
         Err(_) => None,
     };
