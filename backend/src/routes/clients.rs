@@ -56,6 +56,11 @@ pub struct CreateClientResponse {
     notice: &'static str,
 }
 
+/// Reserve the first usable address for the VPN server interface.
+fn first_available_client_ip(subnet: Ipv4Net, used: &HashSet<Ipv4Addr>) -> Option<Ipv4Addr> {
+    subnet.hosts().skip(1).find(|address| !used.contains(address))
+}
+
 pub async fn list(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -120,7 +125,7 @@ pub async fn create(
             used.insert(ip);
         }
     }
-    let assigned_ip = subnet.hosts().find(|address| !used.contains(address))
+    let assigned_ip = first_available_client_ip(subnet, &used)
         .ok_or((StatusCode::CONFLICT, "No free IP addresses remain in this subnet"))?;
 
     let id = Uuid::new_v4().to_string();
@@ -133,6 +138,11 @@ pub async fn create(
     .bind(assigned_ip.to_string()).bind(token_hash).bind(traffic_limit)
     .bind(input.expires_at).execute(&state.pool).await
     .map_err(|error| {
+        if let sqlx::Error::Database(db_error) = &error {
+            if db_error.is_unique_violation() {
+                return (StatusCode::CONFLICT, "The selected client IP is already allocated; retry the request");
+            }
+        }
         tracing::error!("Failed to create client: {error}");
         (StatusCode::INTERNAL_SERVER_ERROR, "Could not save client")
     })?;
@@ -170,4 +180,29 @@ pub async fn disable(
     let _ = sqlx::query("INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'client.disabled', ?)")
         .bind(admin_id).bind(details).execute(&state.pool).await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_available_client_ip;
+    use ipnet::Ipv4Net;
+    use std::{collections::HashSet, net::Ipv4Addr, str::FromStr};
+
+    #[test]
+    fn reserves_first_usable_address_for_server() {
+        let subnet = Ipv4Net::from_str("10.66.0.0/24").unwrap();
+        let used = HashSet::new();
+        assert_eq!(
+            first_available_client_ip(subnet, &used),
+            Some(Ipv4Addr::new(10, 66, 0, 2))
+        );
+    }
+
+    #[test]
+    fn skips_allocated_addresses_and_detects_exhaustion() {
+        let subnet = Ipv4Net::from_str("10.66.0.0/30").unwrap();
+        let mut used = HashSet::new();
+        used.insert(Ipv4Addr::new(10, 66, 0, 2));
+        assert_eq!(first_available_client_ip(subnet, &used), None);
+    }
 }
