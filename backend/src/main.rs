@@ -2,7 +2,7 @@ mod state;
 mod routes;
 mod security;
 
-use std::{env, net::SocketAddr, path::Path};
+use std::{env, net::SocketAddr, path::Path, str::FromStr};
 use axum::{routing::get, Router};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tower_http::{cors::{Any, CorsLayer}, limit::RequestBodyLimitLayer, trace::TraceLayer};
@@ -26,16 +26,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let options = SqliteConnectOptions::from_str(&database_url)
-        .map_err(|e| format!("Invalid DATABASE_URL: {e}"))?
+    let options = SqliteConnectOptions::from_str(&database_url)?
         .create_if_missing(true)
         .foreign_keys(true);
-
-    let pool = SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect_with(options)
-        .await?;
-
+    let pool = SqlitePoolOptions::new().max_connections(5).connect_with(options).await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
 
     let state = AppState {
