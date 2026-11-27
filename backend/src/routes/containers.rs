@@ -254,6 +254,63 @@ pub async fn create(
     }))
 }
 
+
+#[derive(Deserialize)]
+pub struct UpdateAwgProfileRequest {
+    expected_revision: i64,
+    settings: AwgSettings,
+}
+
+/// Update AWG metadata using optimistic concurrency. This deliberately does not
+/// apply the profile to a running interface; runtime synchronization is separate.
+pub async fn update_awg_profile(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    axum::extract::Path(container_id): axum::extract::Path<String>,
+    Json(input): Json<UpdateAwgProfileRequest>,
+) -> Result<Json<ContainerRecord>, (StatusCode, &'static str)> {
+    let (admin_id, _) = authenticated_admin(&state, &jar).await
+        .map_err(|status| (status, "Authentication required"))?;
+    input.settings.validate()
+        .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+    let settings_json = serde_json::to_string(&input.settings)
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not serialize AWG settings"))?;
+
+    let result = sqlx::query(
+        "UPDATE protocol_containers SET awg_settings_json = ?, revision = revision + 1 WHERE id = ? AND protocol = 'amnezia-awg' AND revision = ?"
+    )
+    .bind(settings_json)
+    .bind(&container_id)
+    .bind(input.expected_revision)
+    .execute(&state.pool).await
+    .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not update AWG profile"))?;
+
+    if result.rows_affected() == 0 {
+        let exists = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM protocol_containers WHERE id = ? AND protocol = 'amnezia-awg'"
+        ).bind(&container_id).fetch_one(&state.pool).await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
+        if exists == 0 {
+            return Err((StatusCode::NOT_FOUND, "AmneziaWG profile not found"));
+        }
+        return Err((StatusCode::CONFLICT, "Profile revision changed; refresh and retry your edit"));
+    }
+
+    let details = serde_json::json!({
+        "container_id": container_id,
+        "revision": input.expected_revision + 1,
+        "runtime_applied": false
+    }).to_string();
+    let _ = sqlx::query("INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'awg.profile.updated', ?)")
+        .bind(admin_id).bind(details).execute(&state.pool).await;
+
+    let item = sqlx::query_as::<_, ContainerRecord>(
+        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json FROM protocol_containers WHERE id = ?"
+    ).bind(&container_id).fetch_one(&state.pool).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read updated profile"))?;
+    Ok(Json(item))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{subnets_overlap, AwgSettings};
