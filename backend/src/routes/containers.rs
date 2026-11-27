@@ -360,7 +360,7 @@ pub async fn provision_wireguard_server_key(
     let mut tx = state.pool.begin().await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not begin key provisioning"))?;
     let result = sqlx::query(
-        "UPDATE protocol_containers SET wireguard_server_public_key = ?, wireguard_server_private_key_encrypted = ? WHERE id = ? AND wireguard_server_public_key IS NULL"
+        "UPDATE protocol_containers SET wireguard_server_public_key = ?, wireguard_server_private_key_encrypted = ?, revision = revision + 1 WHERE id = ? AND wireguard_server_public_key IS NULL"
     ).bind(&public_key).bind(&encrypted).bind(&container_id)
         .execute(&mut *tx).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not save server keys"))?;
@@ -368,7 +368,7 @@ pub async fn provision_wireguard_server_key(
         return Err((StatusCode::CONFLICT, "Server keys already exist; key rotation requires a separate procedure"));
     }
 
-    let details = serde_json::json!({"container_id": container_id, "protocol": protocol}).to_string();
+    let details = serde_json::json!({"container_id": container_id, "protocol": protocol, "revision_incremented": true}).to_string();
     sqlx::query("INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'wireguard.server_key.provisioned', ?)")
         .bind(admin_id).bind(details).execute(&mut *tx).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not record key provisioning"))?;
