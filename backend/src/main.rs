@@ -8,7 +8,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tower_http::{cors::{Any, CorsLayer}, limit::RequestBodyLimitLayer, trace::TraceLayer};
 use tracing_subscriber::EnvFilter;
 
-use crate::{routes::{auth, setup, system}, state::AppState};
+use crate::{routes::{auth, clients, containers, setup, system}, state::AppState};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -44,6 +44,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/auth/login", axum::routing::post(auth::login))
         .route("/api/auth/logout", axum::routing::post(auth::logout))
         .route("/api/auth/me", get(auth::me))
+        .route("/api/containers", get(containers::list).post(containers::create))
+        .route("/api/containers/{container_id}/clients", axum::routing::post(clients::create))
+        .route("/api/clients", get(clients::list))
+        .route("/api/clients/{client_id}/disable", axum::routing::post(clients::disable))
         .with_state(state)
         .layer(RequestBodyLimitLayer::new(16 * 1024))
         .layer(CorsLayer::new().allow_origin([
