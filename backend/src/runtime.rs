@@ -327,16 +327,15 @@ impl HostRuntime {
             let _ = child.kill().await;
             return Err("VPN peer statistics output exceeded the safety limit");
         }
-        let status = match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
-            Ok(Ok(status)) if status.success() => status,
+        match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+            Ok(Ok(status)) if status.success() => {}
             Ok(Ok(_)) => return Err("Could not read live VPN peer statistics"),
             Ok(Err(_)) => return Err("Could not finish VPN peer statistics command"),
             Err(_) => {
                 let _ = child.kill().await;
                 return Err("VPN peer statistics command did not terminate");
             }
-        };
-        let _ = status;
+        }
         let dump = std::str::from_utf8(&output)
             .map_err(|_| "VPN peer statistics output is not valid UTF-8")?;
         parse_peer_dump(dump)
