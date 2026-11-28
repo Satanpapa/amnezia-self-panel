@@ -21,6 +21,17 @@ async fn all_sqlite_migrations_apply_to_a_fresh_database() {
     .expect("protocol container runtime operation column should exist");
     assert_eq!(operation_column, 1);
 
+    for column in ["last_rx_bytes", "last_tx_bytes"] {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('clients') WHERE name = ?"
+        )
+        .bind(column)
+        .fetch_one(&pool)
+        .await
+        .expect("client traffic snapshot columns should exist");
+        assert_eq!(count, 1, "missing client traffic column {column}");
+    }
+
     let client_ip_trigger_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN ('clients_prevent_duplicate_ip_insert', 'clients_prevent_duplicate_ip_update')"
     )
