@@ -12,34 +12,37 @@ use super::auth::authenticated_admin;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum AwgUint32Range {
+pub enum AwgPaddingRange {
     Number(u32),
     Range(String),
 }
 
-impl AwgUint32Range {
+impl AwgPaddingRange {
     pub(crate) fn validate(&self) -> Result<(), &'static str> {
         let Self::Range(value) = self else { return Ok(()) };
         if value.len() > 21 || value.trim() != value {
-            return Err("ContentPaddingAddition must be a uint32 value or a range such as 16-32");
-        }
-        if value == "(off)" {
-            return Ok(());
+            return Err("ContentPaddingAddition must be an integer or range from 0 to 65535");
         }
         let parts: Vec<&str> = value.split('-').collect();
         match parts.as_slice() {
             [single] => {
-                single.parse::<u32>()
-                    .map(|_| ())
-                    .map_err(|_| "ContentPaddingAddition values must fit uint32")
+                let parsed = single.parse::<u32>()
+                    .map_err(|_| "ContentPaddingAddition values must be integers from 0 to 65535")?;
+                if parsed > u16::MAX as u32 {
+                    return Err("ContentPaddingAddition must not exceed 65535 with current AmneziaWG tools");
+                }
+                Ok(())
             }
             [start, end] => {
                 let start = start.parse::<u32>()
-                    .map_err(|_| "ContentPaddingAddition ranges must contain uint32 values")?;
+                    .map_err(|_| "ContentPaddingAddition ranges must contain integers from 0 to 65535")?;
                 let end = end.parse::<u32>()
-                    .map_err(|_| "ContentPaddingAddition ranges must contain uint32 values")?;
+                    .map_err(|_| "ContentPaddingAddition ranges must contain integers from 0 to 65535")?;
                 if start > end {
                     return Err("ContentPaddingAddition range start must not exceed range end");
+                }
+                if end > u16::MAX as u32 {
+                    return Err("ContentPaddingAddition range must not exceed 65535 with current AmneziaWG tools");
                 }
                 Ok(())
             }
@@ -68,7 +71,7 @@ pub struct AwgSettings {
     pub i3: Option<String>,
     pub i4: Option<String>,
     pub i5: Option<String>,
-    pub content_padding_addition: Option<AwgUint32Range>,
+    pub content_padding_addition: Option<AwgPaddingRange>,
     pub random_trailers: bool,
     pub disable_cookies: bool,
 }
@@ -134,7 +137,14 @@ impl AwgSettings {
             }
             ranges.push((start, end));
         }
-        for signature in [&self.i1, &self.i2, &self.i3, &self.i4, &self.i5].into_iter().flatten() {
+        let signatures = [&self.i1, &self.i2, &self.i3, &self.i4, &self.i5];
+        let total_cps_bytes: usize = signatures.iter().filter_map(|value| value.as_deref()).map(str::len).sum();
+        // Upstream amneziawg-tools v3.1 writes I1-I5 to a fixed netlink buffer
+        // without bounds checks; stay below the reported failure threshold.
+        if total_cps_bytes > 3000 {
+            return Err("Combined I1-I5 CPS signatures must not exceed 3000 characters");
+        }
+        for signature in signatures.into_iter().flatten() {
             validate_cps_signature(signature)?;
         }
         Ok(())
@@ -581,7 +591,7 @@ pub async fn provision_awg_header_protection_key(
 mod tests {
     use super::{
         subnets_overlap, validate_dns_servers, validate_endpoint, validate_transport,
-        AwgSettings, AwgUint32Range,
+        AwgSettings, AwgPaddingRange,
     };
     use std::str::FromStr;
     use ipnet::Ipv4Net;
@@ -675,7 +685,7 @@ mod tests {
         };
         assert!(legacy.validate().is_err());
         let modern = AwgSettings {
-            version: "3.1".into(), content_padding_addition: Some(AwgUint32Range::Number(16)),
+            version: "3.1".into(), content_padding_addition: Some(AwgPaddingRange::Number(16)),
             random_trailers: true, disable_cookies: true, ..Default::default()
         };
         assert!(modern.validate().is_ok());
@@ -684,10 +694,10 @@ mod tests {
     #[test]
     fn validates_awg31_content_padding_uint32_and_ranges() {
         for value in [
-            AwgUint32Range::Number(u32::MAX),
-            AwgUint32Range::Range("16".into()),
-            AwgUint32Range::Range("16-32".into()),
-            AwgUint32Range::Range("(off)".into()),
+            AwgPaddingRange::Number(u32::MAX),
+            AwgPaddingRange::Range("16".into()),
+            AwgPaddingRange::Range("16-32".into()),
+            AwgPaddingRange::Range("(off)".into()),
         ] {
             let settings = AwgSettings {
                 version: "3.1".into(),
@@ -698,10 +708,10 @@ mod tests {
         }
 
         for value in [
-            AwgUint32Range::Range("32-16".into()),
-            AwgUint32Range::Range("4294967296".into()),
-            AwgUint32Range::Range("1-4294967296".into()),
-            AwgUint32Range::Range("".into()),
+            AwgPaddingRange::Range("32-16".into()),
+            AwgPaddingRange::Range("4294967296".into()),
+            AwgPaddingRange::Range("1-4294967296".into()),
+            AwgPaddingRange::Range("".into()),
         ] {
             let settings = AwgSettings {
                 version: "3.1".into(),
@@ -729,6 +739,23 @@ mod tests {
         ] {
             assert!(invalid.validate_header_protection().is_err());
         }
+    }
+
+    #[test]
+    fn caps_combined_cps_signature_size_below_upstream_netlink_buffer_limit() {
+        let large = format!("<b 0x{}>", "ab".repeat(490));
+        let settings = AwgSettings {
+            version: "3.1".into(),
+            i1: Some(large.clone()),
+            i2: Some(large.clone()),
+            i3: Some(large.clone()),
+            i4: Some(large),
+            ..Default::default()
+        };
+        assert_eq!(
+            settings.validate(),
+            Err("Combined I1-I5 CPS signatures must not exceed 3000 characters")
+        );
     }
 
     #[test]
