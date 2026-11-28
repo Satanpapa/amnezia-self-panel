@@ -6,7 +6,7 @@ mod runtime;
 #[cfg(test)]
 mod migration_tests;
 
-use std::{env, net::SocketAddr, path::Path, str::FromStr, sync::Arc};
+use std::{env, net::SocketAddr, path::Path, str::FromStr, sync::Arc, time::Duration};
 use zeroize::Zeroizing;
 use axum::{routing::get, Router};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -74,6 +74,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         wireguard_master_key,
     };
     reconcile_running_host_interfaces(&state).await?;
+
+    // Expired peers are revoked without requiring an administrator browser session.
+    // The reaper runs only in explicitly enabled Linux host-runtime mode.
+    let expiry_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            let revoked = interfaces::reap_expired_peers_once(&expiry_state).await;
+            if revoked > 0 {
+                tracing::info!(revoked, "Automatically revoked expired WireGuard/AmneziaWG client(s)");
+            }
+        }
+    });
 
     let app = Router::new()
         .route("/api/health", get(system::health))
