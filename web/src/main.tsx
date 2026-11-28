@@ -488,7 +488,11 @@ function ContainerCard({ container, clients, runtimeCanManage, onStart, onStop, 
   let awg: Partial<AwgSettings> = {};
   try { awg = JSON.parse(container.awg_settings_json || '{}') as Partial<AwgSettings>; } catch {}
   const profileStopped = (container.status === 'preview' || container.status === 'stopped') && !container.runtime_operation;
-  const stateLabel = container.runtime_operation === 'start' ? 'STARTING' : container.runtime_operation === 'stop' ? 'STOPPING' : container.status.toUpperCase();
+  const stateLabel = container.status === 'running' && container.runtime_operation
+    ? 'SYNCING'
+    : container.runtime_operation === 'start' ? 'STARTING'
+      : container.runtime_operation === 'stop' ? 'STOPPING'
+        : container.status.toUpperCase();
   return <article className="container-card">
     <div className="container-top"><div><b>{container.name}</b><span className="protocol-tag">{protocolNames[container.protocol] ?? container.protocol}</span></div><span className={`preview-tag ${container.runtime_operation ? 'status-starting' : container.status === 'running' ? 'status-running' : container.status === 'error' ? 'status-error' : ''}`}>{stateLabel}</span></div>
     {container.status === 'running' && <p className="muted small-note">Peer list фиксируется при запуске. После добавления или отзыва устройств перезапусти интерфейс.</p>}
