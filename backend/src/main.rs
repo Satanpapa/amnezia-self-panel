@@ -40,6 +40,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .foreign_keys(true);
     let pool = SqlitePoolOptions::new().max_connections(5).connect_with(options).await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
+    let recovered_operations = runtime::recover_interrupted_operations(&pool).await?;
+    if recovered_operations > 0 {
+        tracing::warn!(
+            recovered_operations,
+            "Recovered interrupted VPN runtime operation(s); affected profiles require explicit cleanup"
+        );
+    }
 
     let runtime: Arc<dyn RuntimeAdapter> = match env::var("RUNTIME_MODE").as_deref() {
         Ok("docker") => Arc::new(DockerRuntime::new()),
