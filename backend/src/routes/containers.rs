@@ -298,7 +298,7 @@ fn validate_transport(protocol: &str, transport: &str) -> Result<(), &'static st
     }
 }
 
-fn profile_is_stopped(status: &str, runtime_operation: Option<&str>) -> bool {
+pub(crate) fn profile_is_stopped(status: &str, runtime_operation: Option<&str>) -> bool {
     runtime_operation.is_none() && (status == "preview" || status == "stopped")
 }
 
