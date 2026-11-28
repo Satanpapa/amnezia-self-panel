@@ -1,10 +1,19 @@
 pub mod awg_config;
 
-use std::{env, fs, path::Path, time::Duration};
+use std::{
+    env,
+    fs::{self, OpenOptions},
+    io::Write,
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use bollard::Docker;
 use serde::Serialize;
+use tokio::process::Command;
+use zeroize::Zeroizing;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeStatus {
@@ -21,6 +30,23 @@ pub struct RuntimeStatus {
 #[async_trait]
 pub trait RuntimeAdapter: Send + Sync {
     async fn status(&self) -> RuntimeStatus;
+
+    async fn start_interface(
+        &self,
+        _protocol: &str,
+        _interface_name: &str,
+        _config: Zeroizing<String>,
+    ) -> Result<(), &'static str> {
+        Err("This runtime does not support VPN interface management")
+    }
+
+    async fn stop_interface(
+        &self,
+        _protocol: &str,
+        _interface_name: &str,
+    ) -> Result<(), &'static str> {
+        Err("This runtime does not support VPN interface management")
+    }
 }
 
 /// Safe local adapter used by default. It never attempts to start VPN services.
@@ -97,10 +123,29 @@ impl RuntimeAdapter for DockerRuntime {
 }
 
 
-/// Read-only Linux host probe for the official WireGuard / AmneziaWG tools.
-/// It deliberately does not create interfaces or execute privileged commands.
-#[derive(Debug, Default)]
-pub struct HostRuntime;
+/// Linux host runtime. Mutating operations require an explicit environment opt-in.
+pub struct HostRuntime {
+    config_dir: PathBuf,
+    allow_mutations: bool,
+}
+
+impl Default for HostRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HostRuntime {
+    pub fn new() -> Self {
+        let config_dir = env::var_os("HOST_RUNTIME_CONFIG_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/etc/amnezia-panel/interfaces"));
+        let allow_mutations = env::var("HOST_RUNTIME_ALLOW_MUTATIONS")
+            .map(|value| value.trim() == "true")
+            .unwrap_or(false);
+        Self { config_dir, allow_mutations }
+    }
+}
 
 fn executable_in_path(name: &str) -> bool {
     let Some(path) = env::var_os("PATH") else { return false };
