@@ -410,6 +410,7 @@ mod tests {
             listen_port: 51820,
             mtu: 1420,
             server_public_key: &pubkey,
+            preshared_key: None,
             awg_settings: None,
             header_protection_key: None,
             persistent_keepalive: 25,
@@ -424,8 +425,8 @@ mod tests {
         let pubkey_two = STANDARD.encode([10u8; 32]);
         let subnet = "10.66.0.0/24".parse().unwrap();
         let peers = [
-            ConfigPeer { public_key: &pubkey_one, assigned_ip: Ipv4Addr::new(10, 66, 0, 2) },
-            ConfigPeer { public_key: &pubkey_two, assigned_ip: Ipv4Addr::new(10, 66, 0, 2) },
+            ConfigPeer { public_key: &pubkey_one, preshared_key: None, assigned_ip: Ipv4Addr::new(10, 66, 0, 2) },
+            ConfigPeer { public_key: &pubkey_two, preshared_key: None, assigned_ip: Ipv4Addr::new(10, 66, 0, 2) },
         ];
         let result = render_server_config(&ServerConfigInput {
             protocol: "wireguard",
