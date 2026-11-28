@@ -49,6 +49,20 @@ pub trait RuntimeAdapter: Send + Sync {
     }
 }
 
+/// Mark interrupted runtime operations as requiring administrator cleanup.
+/// The next host-runtime stop is idempotent: it removes a partial interface if
+/// present, or simply clears stale state when the interface is already gone.
+pub async fn recover_interrupted_operations(
+    pool: &sqlx::SqlitePool,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE protocol_containers SET status = 'error', runtime_operation = NULL WHERE runtime_operation IS NOT NULL OR status IN ('starting', 'stopping')"
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 /// Safe local adapter used by default. It never attempts to start VPN services.
 #[derive(Debug, Default)]
 pub struct PreviewRuntime;
@@ -211,6 +225,34 @@ impl HostRuntime {
             return Err("Could not persist protected VPN config");
         }
         Ok(())
+    }
+
+    async fn interface_exists(&self, interface_name: &str) -> Result<bool, &'static str> {
+        if interface_name.is_empty() || interface_name.len() > 15
+            || !interface_name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        {
+            return Err("Invalid generated VPN interface name");
+        }
+        let ip_binary = trusted_system_executable("ip")
+            .ok_or("iproute2 binary is missing or not root-owned and protected")?;
+        let mut command = Command::new(ip_binary);
+        command
+            .env_clear()
+            .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+            .env("LANG", "C")
+            .args(["link", "show", "dev"])
+            .arg(interface_name)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        match tokio::time::timeout(Duration::from_secs(5), command.status()).await {
+            Ok(Ok(status)) if status.success() => Ok(true),
+            Ok(Ok(status)) if status.code() == Some(1) => Ok(false),
+            Ok(Ok(_)) => Err("Could not reliably inspect the Linux VPN interface state"),
+            Ok(Err(_)) => Err("Could not inspect the Linux VPN interface state"),
+            Err(_) => Err("Timed out while inspecting the Linux VPN interface state"),
+        }
     }
 
     async fn run_quick(
@@ -498,8 +540,19 @@ impl RuntimeAdapter for HostRuntime {
             return Err("Required Linux VPN tools, kernel support and CAP_NET_ADMIN are missing");
         }
         let path = self.config_path(interface_name)?;
-        let metadata = fs::symlink_metadata(&path)
-            .map_err(|_| "Managed VPN config file does not exist")?;
+        let interface_exists = self.interface_exists(interface_name).await?;
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !interface_exists => {
+                // Recover a stale DB "running/error" state after a crash when
+                // both the interface and its private config have disappeared.
+                return Ok(());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err("Managed VPN interface exists but its protected config file is missing");
+            }
+            Err(_) => return Err("Could not inspect managed VPN config file"),
+        };
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err("Managed VPN config path is not a regular file");
         }
@@ -513,9 +566,11 @@ impl RuntimeAdapter for HostRuntime {
                 return Err("Managed VPN config file ownership, permissions or link count are unsafe");
             }
         }
-        self.run_quick(binary, "down", &path).await?;
+        if interface_exists {
+            self.run_quick(binary, "down", &path).await?;
+        }
         fs::remove_file(path)
-            .map_err(|_| "Interface stopped, but protected config cleanup failed")?;
+            .map_err(|_| "Interface is stopped or absent, but protected config cleanup failed")?;
         Ok(())
     }
 }
