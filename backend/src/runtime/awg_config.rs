@@ -70,7 +70,10 @@ fn append_common_awg(
     }
 }
 
-fn append_client_awg(output: &mut Zeroizing<String>, settings: &AwgSettings) {
+fn append_side_awg(output: &mut Zeroizing<String>, settings: &AwgSettings) {
+    // These values are configurable independently on each end of an AWG tunnel.
+    // This first profile model uses one shared set, so we emit the same values
+    // into server and client configs until per-side overrides are introduced.
     for (name, value) in [("Jc", settings.jc), ("Jmin", settings.jmin), ("Jmax", settings.jmax)] {
         if let Some(value) = value {
             let _ = writeln!(output, "{name} = {value}");
@@ -177,6 +180,7 @@ pub fn render_server_config(input: &ServerConfigInput<'_>) -> Result<Zeroizing<S
 
     if let Some(settings) = input.awg_settings {
         append_common_awg(&mut output, settings, input.header_protection_key);
+        append_side_awg(&mut output, settings);
     }
 
     let mut seen_ips = std::collections::HashSet::new();
@@ -230,7 +234,7 @@ pub fn render_client_config(input: &ClientConfigInput<'_>) -> Result<Zeroizing<S
 
     if let Some(settings) = input.awg_settings {
         append_common_awg(&mut output, settings, input.header_protection_key);
-        append_client_awg(&mut output, settings);
+        append_side_awg(&mut output, settings);
     }
 
     let _ = writeln!(output, "\n[Peer]");
@@ -291,10 +295,10 @@ mod tests {
         assert!(server.contains("HeaderProtectionKey = "));
         assert!(server.contains("RandomTrailers = on"));
         assert!(server.contains("S4 = 12"));
-        assert!(!server.contains("DisableCookies = on"));
-        assert!(!server.contains("ContentPaddingAddition = "));
-        assert!(!server.contains("Jc = "));
-        assert!(!server.contains("I1 = "));
+        assert!(server.contains("DisableCookies = on"));
+        assert!(server.contains("ContentPaddingAddition = 16-32"));
+        assert!(server.contains("Jc = 5"));
+        assert!(server.contains("I1 = <r 8><t>"));
 
         let client_settings = settings();
         let client = render_client_config(&ClientConfigInput {
