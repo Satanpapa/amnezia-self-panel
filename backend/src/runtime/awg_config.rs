@@ -9,6 +9,7 @@ use crate::routes::containers::{AwgSettings, AwgPaddingRange};
 #[derive(Debug, Clone, Copy)]
 pub struct ConfigPeer<'a> {
     pub public_key: &'a str,
+    pub preshared_key: Option<&'a str>,
     pub assigned_ip: Ipv4Addr,
 }
 
@@ -33,6 +34,7 @@ pub struct ClientConfigInput<'a> {
     pub listen_port: u16,
     pub mtu: u16,
     pub server_public_key: &'a str,
+    pub preshared_key: Option<&'a str>,
     pub awg_settings: Option<&'a AwgSettings>,
     pub header_protection_key: Option<&'a [u8; 32]>,
     pub persistent_keepalive: u16,
@@ -201,8 +203,14 @@ pub fn render_server_config(input: &ServerConfigInput<'_>) -> Result<Zeroizing<S
         if !validate_key(peer.public_key) {
             return Err("Peer public key must be a valid base64 32-byte key");
         }
+        if peer.preshared_key.is_some_and(|key| !validate_key(key)) {
+            return Err("Peer preshared key must be a valid base64 32-byte key");
+        }
         let _ = writeln!(output, "\n[Peer]");
         let _ = writeln!(output, "PublicKey = {}", peer.public_key);
+        if let Some(preshared_key) = peer.preshared_key {
+            let _ = writeln!(output, "PresharedKey = {preshared_key}");
+        }
         let _ = writeln!(output, "AllowedIPs = {}/32", peer.assigned_ip);
     }
     Ok(output)
@@ -214,6 +222,7 @@ pub fn render_client_config(input: &ClientConfigInput<'_>) -> Result<Zeroizing<S
     if input.listen_port == 0
         || !(576..=9000).contains(&input.mtu)
         || !validate_key(input.server_public_key)
+        || input.preshared_key.is_some_and(|key| !validate_key(key))
         || !validate_dns_list(input.dns)
         || !input.vpn_subnet.contains(&input.assigned_ip)
         || input.vpn_subnet.hosts().next() == Some(input.assigned_ip)
@@ -247,6 +256,9 @@ pub fn render_client_config(input: &ClientConfigInput<'_>) -> Result<Zeroizing<S
 
     let _ = writeln!(output, "\n[Peer]");
     let _ = writeln!(output, "PublicKey = {}", input.server_public_key);
+    if let Some(preshared_key) = input.preshared_key {
+        let _ = writeln!(output, "PresharedKey = {preshared_key}");
+    }
     let _ = writeln!(output, "Endpoint = {endpoint}");
     let _ = writeln!(
         output,
@@ -293,7 +305,7 @@ mod tests {
         let hpk = [8u8; 32];
         let pubkey = STANDARD.encode([9u8; 32]);
         let subnet = "10.66.0.0/24".parse().unwrap();
-        let peers = [ConfigPeer { public_key: &pubkey, assigned_ip: Ipv4Addr::new(10, 66, 0, 2) }];
+        let peers = [ConfigPeer { public_key: &pubkey, preshared_key: None, assigned_ip: Ipv4Addr::new(10, 66, 0, 2) }];
         let server_settings = settings();
         let server = render_server_config(&ServerConfigInput {
             protocol: "amnezia-awg",
@@ -324,6 +336,7 @@ mod tests {
             listen_port: 443,
             mtu: 1280,
             server_public_key: &pubkey,
+            preshared_key: None,
             awg_settings: Some(&client_settings),
             header_protection_key: Some(&hpk),
             persistent_keepalive: 25,
@@ -337,6 +350,51 @@ mod tests {
         assert!(!client.contains("AllowedIPs = 0.0.0.0/0"));
     }
 
+
+    #[test]
+    fn renders_matching_optional_peer_preshared_keys_on_both_sides() {
+        let private = [7_u8; 32];
+        let server_public = STANDARD.encode([9_u8; 32]);
+        let client_public = STANDARD.encode([10_u8; 32]);
+        let preshared = STANDARD.encode([11_u8; 32]);
+        let subnet = "10.66.0.0/24".parse().unwrap();
+        let peers = [ConfigPeer {
+            public_key: &client_public,
+            preshared_key: Some(&preshared),
+            assigned_ip: Ipv4Addr::new(10, 66, 0, 2),
+        }];
+
+        let server = render_server_config(&ServerConfigInput {
+            protocol: "wireguard",
+            private_key: &private,
+            subnet,
+            listen_port: 51820,
+            mtu: 1420,
+            peers: &peers,
+            awg_settings: None,
+            header_protection_key: None,
+        }).unwrap();
+        assert!(server.contains(&format!("PresharedKey = {preshared}")));
+
+        let client = render_client_config(&ClientConfigInput {
+            protocol: "wireguard",
+            private_key: &private,
+            assigned_ip: Ipv4Addr::new(10, 66, 0, 2),
+            vpn_subnet: subnet,
+            dns: "1.1.1.1",
+            endpoint: "vpn.example.com",
+            listen_port: 51820,
+            mtu: 1420,
+            server_public_key: &server_public,
+            preshared_key: Some(&preshared),
+            awg_settings: None,
+            header_protection_key: None,
+            persistent_keepalive: 25,
+        }).unwrap();
+        assert!(client.contains(&format!("PresharedKey = {preshared}")));
+        assert_eq!(server.matches("PresharedKey = ").count(), 1);
+        assert_eq!(client.matches("PresharedKey = ").count(), 1);
+    }
 
     #[test]
     fn rejects_client_ip_outside_vpn_subnet() {
