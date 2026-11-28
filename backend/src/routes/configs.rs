@@ -215,7 +215,7 @@ pub async fn client_config(
     let (admin_id, _) = authenticated_admin(&state, &jar).await
         .map_err(|status| (status, "Authentication required"))?;
     let row = sqlx::query(
-        "SELECT c.container_id, c.assigned_ip, c.enabled, c.expires_at, c.wireguard_public_key, c.wireguard_private_key_encrypted, p.protocol, p.endpoint, p.listen_port, p.dns, p.mtu, p.awg_settings_json, p.wireguard_server_public_key, p.wireguard_server_private_key_encrypted, p.awg_header_protection_key_encrypted FROM clients c JOIN protocol_containers p ON p.id = c.container_id WHERE c.id = ?"
+        "SELECT c.container_id, c.assigned_ip, c.enabled, c.expires_at, c.wireguard_public_key, c.wireguard_private_key_encrypted, p.protocol, p.endpoint, p.listen_port, p.dns, p.mtu, p.subnet, p.awg_settings_json, p.wireguard_server_public_key, p.wireguard_server_private_key_encrypted, p.awg_header_protection_key_encrypted FROM clients c JOIN protocol_containers p ON p.id = c.container_id WHERE c.id = ?"
     ).bind(&client_id).fetch_optional(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?
         .ok_or((StatusCode::NOT_FOUND, "Client not found"))?;
@@ -278,6 +278,10 @@ pub async fn client_config(
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid MTU"))?;
     let mtu = u16::try_from(mtu)
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Stored MTU is invalid"))?;
+    let subnet_text: String = row.try_get("subnet")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid VPN subnet"))?;
+    let vpn_subnet = Ipv4Net::from_str(&subnet_text)
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Stored VPN subnet is invalid"))?;
     let assigned_ip_text: String = row.try_get("assigned_ip")
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid client IP"))?;
     let assigned_ip = Ipv4Addr::from_str(&assigned_ip_text)
@@ -304,6 +308,7 @@ pub async fn client_config(
         protocol: &protocol,
         private_key: &private_key,
         assigned_ip,
+        vpn_subnet,
         dns: &dns,
         endpoint: &endpoint,
         listen_port,
