@@ -15,7 +15,7 @@ use super::auth::authenticated_admin;
 pub async fn status(
     State(state): State<AppState>,
     jar: CookieJar,
-) -> Result<Json<RuntimeStatus>, StatusCode> {
+) -> Result<Json<RuntimeStatusResponse>, StatusCode> {
     authenticated_admin(&state, &jar).await?;
     Ok(Json(RuntimeStatusResponse {
         runtime: state.runtime.status().await,
