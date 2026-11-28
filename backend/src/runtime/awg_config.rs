@@ -27,6 +27,7 @@ pub struct ClientConfigInput<'a> {
     pub protocol: &'a str,
     pub private_key: &'a [u8; 32],
     pub assigned_ip: Ipv4Addr,
+    pub vpn_subnet: Ipv4Net,
     pub dns: &'a str,
     pub endpoint: &'a str,
     pub listen_port: u16,
@@ -214,6 +215,8 @@ pub fn render_client_config(input: &ClientConfigInput<'_>) -> Result<Zeroizing<S
         || !(576..=9000).contains(&input.mtu)
         || !validate_key(input.server_public_key)
         || !validate_dns_list(input.dns)
+        || !input.vpn_subnet.contains(&input.assigned_ip)
+        || input.vpn_subnet.hosts().next() == Some(input.assigned_ip)
     {
         return Err("Client configuration contains invalid network parameters");
     }
@@ -245,7 +248,12 @@ pub fn render_client_config(input: &ClientConfigInput<'_>) -> Result<Zeroizing<S
     let _ = writeln!(output, "\n[Peer]");
     let _ = writeln!(output, "PublicKey = {}", input.server_public_key);
     let _ = writeln!(output, "Endpoint = {endpoint}");
-    let _ = writeln!(output, "AllowedIPs = 0.0.0.0/0");
+    let _ = writeln!(
+        output,
+        "AllowedIPs = {}/{}",
+        input.vpn_subnet.network(),
+        input.vpn_subnet.prefix_len()
+    );
     if input.persistent_keepalive > 0 {
         let _ = writeln!(output, "PersistentKeepalive = {}", input.persistent_keepalive);
     }
@@ -310,6 +318,7 @@ mod tests {
             protocol: "amnezia-awg",
             private_key: &private,
             assigned_ip: Ipv4Addr::new(10, 66, 0, 2),
+            vpn_subnet: subnet,
             dns: "1.1.1.1, 8.8.8.8",
             endpoint: "vpn.example.com",
             listen_port: 443,
@@ -324,6 +333,31 @@ mod tests {
         assert!(client.contains("ContentPaddingAddition = 16-32"));
         assert!(client.contains("Jc = 5"));
         assert!(client.contains("I1 = <r 8><t>"));
+        assert!(client.contains("AllowedIPs = 10.66.0.0/24"));
+        assert!(!client.contains("AllowedIPs = 0.0.0.0/0"));
+    }
+
+
+    #[test]
+    fn rejects_client_ip_outside_vpn_subnet() {
+        let private = [7u8; 32];
+        let pubkey = STANDARD.encode([9u8; 32]);
+        let subnet = "10.66.0.0/24".parse().unwrap();
+        let result = render_client_config(&ClientConfigInput {
+            protocol: "wireguard",
+            private_key: &private,
+            assigned_ip: Ipv4Addr::new(10, 67, 0, 2),
+            vpn_subnet: subnet,
+            dns: "1.1.1.1",
+            endpoint: "vpn.example.com",
+            listen_port: 51820,
+            mtu: 1420,
+            server_public_key: &pubkey,
+            awg_settings: None,
+            header_protection_key: None,
+            persistent_keepalive: 25,
+        });
+        assert!(matches!(result, Err("Client configuration contains invalid network parameters")));
     }
 
     #[test]
