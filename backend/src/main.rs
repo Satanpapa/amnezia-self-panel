@@ -245,7 +245,7 @@ mod startup_reconciliation_tests {
     #[tokio::test]
     async fn marks_missing_linux_interfaces_as_error_but_preserves_existing_and_unmanaged_profiles() {
         let state = state_with_profiles().await;
-        reconcile_running_host_interfaces(&state).await.unwrap();
+        super::reconcile_running_host_interfaces(&state).await.unwrap();
 
         let statuses = sqlx::query_as::<_, (String, String)>(
             "SELECT id, status FROM protocol_containers ORDER BY id"
@@ -269,7 +269,7 @@ mod startup_reconciliation_tests {
             runtime: Arc::new(runtime),
             wireguard_master_key: None,
         };
-        reconcile_running_host_interfaces(&state).await.unwrap();
+        super::reconcile_running_host_interfaces(&state).await.unwrap();
         let status: String = sqlx::query_scalar(
             "SELECT status FROM protocol_containers WHERE id = '123456789a'"
         ).fetch_one(&state.pool).await.unwrap();
