@@ -145,6 +145,90 @@ impl HostRuntime {
             .unwrap_or(false);
         Self { config_dir, allow_mutations }
     }
+
+    fn quick_binary(protocol: &str) -> Result<&'static str, &'static str> {
+        match protocol {
+            "wireguard" => Ok("wg-quick"),
+            "amnezia-awg" => Ok("awg-quick"),
+            _ => Err("Host runtime supports only WireGuard and AmneziaWG"),
+        }
+    }
+
+    fn tools_ready(protocol: &str) -> bool {
+        let ip = executable_in_path("ip");
+        let tun = has_tun_device();
+        let net_admin = has_cap_net_admin();
+        match protocol {
+            "wireguard" => ip && net_admin
+                && executable_in_path("wg") && executable_in_path("wg-quick")
+                && (has_kernel_module("wireguard") || (executable_in_path("wireguard-go") && tun)),
+            "amnezia-awg" => ip && net_admin
+                && executable_in_path("awg") && executable_in_path("awg-quick")
+                && (has_kernel_module("amneziawg") || (executable_in_path("amneziawg-go") && tun)),
+            _ => false,
+        }
+    }
+
+    fn config_path(&self, interface_name: &str) -> Result<PathBuf, &'static str> {
+        if interface_name.is_empty() || interface_name.len() > 15
+            || !interface_name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            return Err("Invalid generated VPN interface name");
+        }
+        fs::create_dir_all(&self.config_dir)
+            .map_err(|_| "Could not create protected VPN config directory")?;
+        let metadata = fs::symlink_metadata(&self.config_dir)
+            .map_err(|_| "Could not inspect VPN config directory")?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err("VPN config path must be a real directory, not a symlink");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&self.config_dir, fs::Permissions::from_mode(0o700))
+                .map_err(|_| "Could not restrict VPN config directory permissions")?;
+        }
+        let directory = fs::canonicalize(&self.config_dir)
+            .map_err(|_| "Could not resolve VPN config directory")?;
+        Ok(directory.join(format!("{interface_name}.conf")))
+    }
+
+    fn write_config_file(&self, path: &Path, config: &[u8]) -> Result<(), &'static str> {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(path)
+            .map_err(|_| "VPN config already exists or cannot be created safely")?;
+        if file.write_all(config).is_err() || file.sync_all().is_err() {
+            let _ = fs::remove_file(path);
+            return Err("Could not persist protected VPN config");
+        }
+        Ok(())
+    }
+
+    async fn run_quick(
+        &self,
+        binary: &'static str,
+        action: &'static str,
+        path: &Path,
+    ) -> Result<(), &'static str> {
+        let mut command = Command::new(binary);
+        command.arg(action).arg(path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        match tokio::time::timeout(Duration::from_secs(45), command.status()).await {
+            Ok(Ok(status)) if status.success() => Ok(()),
+            Ok(Ok(_)) => Err("VPN quick command failed; inspect host service logs"),
+            Ok(Err(_)) => Err("Could not execute VPN quick command"),
+            Err(_) => Err("VPN quick command timed out and was terminated"),
+        }
+    }
 }
 
 fn executable_in_path(name: &str) -> bool {
