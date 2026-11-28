@@ -1,3 +1,5 @@
+pub mod awg_config;
+
 use std::{env, fs, path::Path, time::Duration};
 
 use async_trait::async_trait;
