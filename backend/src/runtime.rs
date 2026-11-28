@@ -400,6 +400,7 @@ pub fn interface_name_for_profile(protocol: &str, profile_id: &str) -> Result<St
 #[cfg(test)]
 mod tests {
     use super::{effective_caps_include_net_admin, interface_name_for_profile, HostRuntime, PreviewRuntime, RuntimeAdapter};
+    use std::{fs, path::PathBuf};
 
     #[tokio::test]
     async fn preview_runtime_never_claims_to_manage_vpn() {
@@ -424,6 +425,32 @@ mod tests {
         assert_eq!(status.mode, "host");
         assert_eq!(status.engine, "linux-host");
         assert!(!status.can_manage_vpn);
+    }
+
+    #[test]
+    fn runtime_config_files_are_private_and_interface_names_are_confined() {
+        let directory = std::env::temp_dir()
+            .join(format!("amnezia-panel-test-{}", uuid::Uuid::new_v4()));
+        let runtime = HostRuntime {
+            config_dir: PathBuf::from(&directory),
+            allow_mutations: false,
+        };
+        let path = runtime.config_path("wgabcdef1234").unwrap();
+        assert!(path.starts_with(&directory));
+        assert!(runtime.config_path("../../etc/passwd").is_err());
+        runtime.write_config_file(&path, b"[Interface]\\n").unwrap();
+        assert!(runtime.write_config_file(&path, b"overwrite").is_err());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let directory_mode = fs::metadata(&directory).unwrap().permissions().mode() & 0o777;
+            let file_mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(directory_mode, 0o700);
+            assert_eq!(file_mode, 0o600);
+        }
+
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
