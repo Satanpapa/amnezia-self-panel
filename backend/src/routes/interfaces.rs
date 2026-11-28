@@ -564,7 +564,7 @@ async fn reap_profile_expired_peers(
         let details = serde_json::json!({
             "container_id": profile_id,
             "client_ids": &revoked_ids,
-            "revoked_count",
+            "revoked_count": revoked_count,
             "runtime": "linux-host",
             "automatic": true
         }).to_string();
@@ -584,3 +584,198 @@ async fn reap_profile_expired_peers(
     Ok(count)
 }
 
+#[cfg(test)]
+mod expiry_reaper_tests {
+    use std::{
+        collections::HashSet,
+        sync::{Arc, Mutex},
+    };
+
+    use async_trait::async_trait;
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use chrono::{Duration as ChronoDuration, Utc};
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    use crate::{
+        runtime::{PeerRuntimeStat, RuntimeAdapter, RuntimeStatus},
+        state::AppState,
+    };
+
+    use super::reap_expired_peers_once;
+
+    struct FakeHostRuntime {
+        peers: Arc<Mutex<HashSet<String>>>,
+        fail_remove: bool,
+    }
+
+    #[async_trait]
+    impl RuntimeAdapter for FakeHostRuntime {
+        async fn status(&self) -> RuntimeStatus {
+            RuntimeStatus {
+                mode: "host",
+                available: true,
+                engine: "linux-host",
+                message: "test host runtime".into(),
+                can_manage_vpn: true,
+            }
+        }
+
+        async fn interface_is_up(
+            &self,
+            _protocol: &str,
+            _interface_name: &str,
+        ) -> Result<bool, &'static str> {
+            Ok(true)
+        }
+
+        async fn peer_stats(
+            &self,
+            _protocol: &str,
+            _interface_name: &str,
+        ) -> Result<Vec<PeerRuntimeStat>, &'static str> {
+            let peers = self.peers.lock().unwrap().clone();
+            Ok(peers.into_iter().map(|public_key| PeerRuntimeStat {
+                public_key,
+                allowed_ips: "10.66.0.2/32".into(),
+                latest_handshake_unix: None,
+                rx_bytes: 0,
+                tx_bytes: 0,
+            }).collect())
+        }
+
+        async fn remove_peer(
+            &self,
+            _protocol: &str,
+            _interface_name: &str,
+            public_key: &str,
+        ) -> Result<(), &'static str> {
+            if self.fail_remove {
+                return Err("simulated peer removal failure");
+            }
+            self.peers.lock().unwrap().remove(public_key);
+            Ok(())
+        }
+    }
+
+    async fn test_state(fail_remove: bool) -> (AppState, Arc<Mutex<HashSet<String>>>, String, String) {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE protocol_containers (
+                id TEXT PRIMARY KEY,
+                protocol TEXT NOT NULL,
+                status TEXT NOT NULL,
+                runtime_operation TEXT,
+                revision INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"
+        ).execute(&pool).await.unwrap();
+        sqlx::query(
+            "CREATE TABLE clients (
+                id TEXT PRIMARY KEY,
+                container_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                assigned_ip TEXT NOT NULL,
+                enabled BOOLEAN NOT NULL,
+                expires_at TEXT,
+                wireguard_public_key TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"
+        ).execute(&pool).await.unwrap();
+        sqlx::query(
+            "CREATE TABLE audit_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_admin_id INTEGER,
+                action TEXT NOT NULL,
+                details_json TEXT NOT NULL
+            )"
+        ).execute(&pool).await.unwrap();
+
+        let profile_id = "abcdef1234".to_string();
+        sqlx::query(
+            "INSERT INTO protocol_containers (id, protocol, status, runtime_operation, revision)
+             VALUES (?, 'wireguard', 'running', NULL, 1)"
+        ).bind(&profile_id).execute(&pool).await.unwrap();
+
+        let expired_key = STANDARD.encode([21u8; 32]);
+        let future_key = STANDARD.encode([22u8; 32]);
+        let expired_at = (Utc::now() - ChronoDuration::minutes(1)).to_rfc3339();
+        let future_at = (Utc::now() + ChronoDuration::days(1)).to_rfc3339();
+
+        sqlx::query(
+            "INSERT INTO clients (id, container_id, name, assigned_ip, enabled, expires_at, wireguard_public_key)
+             VALUES ('expired-client', ?, 'Expired', '10.66.0.2', 1, ?, ?),
+                    ('future-client', ?, 'Future', '10.66.0.3', 1, ?, ?)"
+        )
+            .bind(&profile_id).bind(expired_at).bind(&expired_key)
+            .bind(&profile_id).bind(future_at).bind(&future_key)
+            .execute(&pool).await.unwrap();
+
+        let peers = Arc::new(Mutex::new(HashSet::from([
+            expired_key.clone(),
+            future_key.clone(),
+        ])));
+        let runtime = FakeHostRuntime {
+            peers: peers.clone(),
+            fail_remove,
+        };
+        let state = AppState {
+            pool,
+            cookie_secure: false,
+            runtime: Arc::new(runtime),
+            wireguard_master_key: None,
+        };
+        (state, peers, expired_key, future_key)
+    }
+
+    #[tokio::test]
+    async fn automatically_removes_expired_peer_and_audits_database_revocation() {
+        let (state, peers, expired_key, future_key) = test_state(false).await;
+        assert_eq!(reap_expired_peers_once(&state).await, 1);
+
+        let expired_enabled: bool = sqlx::query_scalar(
+            "SELECT enabled FROM clients WHERE id = 'expired-client'"
+        ).fetch_one(&state.pool).await.unwrap();
+        let future_enabled: bool = sqlx::query_scalar(
+            "SELECT enabled FROM clients WHERE id = 'future-client'"
+        ).fetch_one(&state.pool).await.unwrap();
+        let (status, operation, revision): (String, Option<String>, i64) = sqlx::query_as(
+            "SELECT status, runtime_operation, revision FROM protocol_containers WHERE id = 'abcdef1234'"
+        ).fetch_one(&state.pool).await.unwrap();
+        let audit_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM audit_events WHERE action = 'client.expired_and_revoked'"
+        ).fetch_one(&state.pool).await.unwrap();
+
+        assert!(!expired_enabled);
+        assert!(future_enabled);
+        assert_eq!(status, "running");
+        assert!(operation.is_none());
+        assert_eq!(revision, 2);
+        assert_eq!(audit_count, 1);
+        let remaining = peers.lock().unwrap();
+        assert!(!remaining.contains(&expired_key));
+        assert!(remaining.contains(&future_key));
+    }
+
+    #[tokio::test]
+    async fn keeps_client_enabled_and_releases_lock_when_runtime_peer_removal_fails() {
+        let (state, peers, expired_key, _future_key) = test_state(true).await;
+        assert_eq!(reap_expired_peers_once(&state).await, 0);
+
+        let expired_enabled: bool = sqlx::query_scalar(
+            "SELECT enabled FROM clients WHERE id = 'expired-client'"
+        ).fetch_one(&state.pool).await.unwrap();
+        let (operation, revision): (Option<String>, i64) = sqlx::query_as(
+            "SELECT runtime_operation, revision FROM protocol_containers WHERE id = 'abcdef1234'"
+        ).fetch_one(&state.pool).await.unwrap();
+
+        assert!(expired_enabled);
+        assert!(operation.is_none());
+        assert_eq!(revision, 1);
+        assert!(peers.lock().unwrap().contains(&expired_key));
+    }
+}
