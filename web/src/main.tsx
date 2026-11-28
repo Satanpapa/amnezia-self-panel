@@ -36,6 +36,7 @@ type PeerStatsResponse = {
 };
 type ListResponse<T> = { items: T[] };
 type CreatedClient = { item: Client; subscription_token: string; notice: string };
+type RotatedSubscriptionToken = { client_id: string; subscription_token: string; notice: string };
 type Section = 'overview' | 'protocols' | 'clients';
 
 const emptyAwg = {
@@ -98,6 +99,7 @@ function App() {
   const [editingAwgId, setEditingAwgId] = useState<string | null>(null);
   const [clientFormFor, setClientFormFor] = useState<string | null>(null);
   const [issuedToken, setIssuedToken] = useState('');
+  const [issuedTokenLabel, setIssuedTokenLabel] = useState('Токен доступа создан');
   const [clientSearch, setClientSearch] = useState('');
   const [protocolFilter, setProtocolFilter] = useState('all');
   const [containerDraft, setContainerDraft] = useState({
@@ -294,7 +296,7 @@ function App() {
           ...(clientExpiresAt ? { expires_at: new Date(clientExpiresAt).toISOString() } : {}),
         }),
       });
-      setIssuedToken(result.subscription_token); setClientName(''); setClientNote(''); setClientExpiresAt(''); setClientTrafficLimitGb('0');
+      setIssuedToken(result.subscription_token); setIssuedTokenLabel('Токен доступа создан'); setClientName(''); setClientNote(''); setClientExpiresAt(''); setClientTrafficLimitGb('0');
       setClientFormFor(null); await loadWorkspace();
     } catch (e) { setError(e instanceof Error ? e.message : 'Не удалось создать клиента'); }
     finally { setActionBusy(false); }
@@ -326,6 +328,23 @@ function App() {
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Не удалось скачать клиентский конфиг по токену');
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function rotateClientSubscriptionToken(clientId: string) {
+    if (!window.confirm('Старый токен станет недействительным немедленно. Продолжить?')) return;
+    setActionBusy(true); setError('');
+    try {
+      const result = await api<RotatedSubscriptionToken>(`/api/clients/${clientId}/subscription-token`, {
+        method: 'POST', body: '{}',
+      });
+      setIssuedToken(result.subscription_token);
+      setIssuedTokenLabel('Токен доступа обновлён · предыдущий токен больше не действует');
+      await loadWorkspace();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Не удалось обновить токен доступа');
     } finally {
       setActionBusy(false);
     }
@@ -436,7 +455,7 @@ function App() {
           <div className="header-actions"><span className="user-pill">{user}</span><button className="secondary" onClick={() => void refresh()}>↻ Обновить</button><button className="secondary" onClick={logout}>Выйти</button></div>
         </header>
         {error && <div className="form-error global-error">{error}<button onClick={() => setError('')}>Закрыть</button></div>}
-        {issuedToken && <section className="token-notice"><b>Токен доступа создан</b><p>Токен показывается один раз. Получить актуальный client.conf можно через GET /api/subscriptions/config, передав токен заголовком Authorization: Bearer. Токен не помещается в URL и не хранится в открытом виде на сервере.</p><code>{issuedToken}</code><div className="card-actions"><button className="primary compact" disabled={actionBusy} onClick={() => void downloadSubscriptionConfig()}>{actionBusy ? 'Подготовка…' : 'Скачать client.conf'}</button><button className="secondary compact" onClick={() => setIssuedToken('')}>Скрыть</button></div></section>}
+        {issuedToken && <section className="token-notice"><b>{issuedTokenLabel}</b><p>Токен показывается один раз. Получить актуальный client.conf можно через GET /api/subscriptions/config, передав токен заголовком Authorization: Bearer. Токен не помещается в URL и не хранится в открытом виде на сервере.</p><code>{issuedToken}</code><div className="card-actions"><button className="primary compact" disabled={actionBusy} onClick={() => void downloadSubscriptionConfig()}>{actionBusy ? 'Подготовка…' : 'Скачать client.conf'}</button><button className="secondary compact" onClick={() => { setIssuedToken(''); setIssuedTokenLabel('Токен доступа создан'); }}>Скрыть</button></div></section>}
 
         {section === 'overview' && <>
           <section className="hero-panel">
@@ -515,7 +534,7 @@ function App() {
                 const canRevoke = !!owner && !owner.runtime_operation && ((owner.status === 'preview' || owner.status === 'stopped') || (owner.status === 'running' && runtimeStatus?.mode === 'host' && runtimeStatus.can_manage_vpn && (owner.protocol === 'wireguard' || owner.protocol === 'amnezia-awg')));
                 const livePeer = owner ? peerStats[owner.id]?.items.find(item => item.client_id === client.id) : undefined;
                 return <div className="client-row" key={client.id}>
-                  <span><b>{client.name}</b><small>{client.note || owner?.name || 'Без заметки'}</small>{client.wireguard_public_key && <small className="public-key-line"><code title={client.wireguard_public_key}>{client.wireguard_public_key.slice(0, 18)}…</code><button className="text-action" onClick={() => void navigator.clipboard.writeText(client.wireguard_public_key!)}>Копировать public key</button>{client.enabled && <a className="text-action" href={`/api/clients/${client.id}/config`} download="client.conf">Скачать .conf</a>}</small>}</span>
+                  <span><b>{client.name}</b><small>{client.note || owner?.name || 'Без заметки'}</small>{client.wireguard_public_key && <small className="public-key-line"><code title={client.wireguard_public_key}>{client.wireguard_public_key.slice(0, 18)}…</code><button className="text-action" onClick={() => void navigator.clipboard.writeText(client.wireguard_public_key!)}>Копировать public key</button>{client.enabled && <a className="text-action" href={`/api/clients/${client.id}/config`} download="client.conf">Скачать .conf</a>}</small>}{client.enabled && <small className="public-key-line"><button className="text-action" disabled={actionBusy} onClick={() => void rotateClientSubscriptionToken(client.id)}>Обновить токен подписки</button></small>}</span>
                   <code>{client.assigned_ip}</code><span className="protocol-cell">{protocolNames[owner?.protocol ?? ''] ?? '—'}</span>
                   <span className={client.enabled ? 'status-enabled' : 'status-disabled'}>{client.enabled ? '● Включён' : '○ Отключён'}</span>
                   <span className="peer-activity">{owner?.status === 'running' && runtimeStatus?.mode === 'host' ? livePeer ? <><small>{livePeer.active_on_server ? `RX ${formatBytes(livePeer.rx_bytes)} · TX ${formatBytes(livePeer.tx_bytes)}` : 'Не найден на интерфейсе'}</small><small>{livePeer.traffic_limit_bytes > 0 ? `Лимит ${formatBytes(livePeer.traffic_used_bytes)} / ${formatBytes(livePeer.traffic_limit_bytes)}` : `Учтено ${formatBytes(livePeer.traffic_used_bytes)} · без лимита`}</small><small>{formatHandshake(livePeer.latest_handshake_unix)}{livePeer.expired ? ' · ИСТЁК' : ''}</small></> : <small>Получение статистики…</small> : <small>—</small>}</span>
