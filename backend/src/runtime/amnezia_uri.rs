@@ -1,7 +1,8 @@
-use std::io::{Read, Write};
+use std::{fmt::Write as FmtWrite, io::{Read, Write}};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use flate2::{read::ZlibDecoder, write::ZlibEncoder, Compression};
+use qrcodegen::{QrCode, QrCodeEcc};
 use zeroize::Zeroizing;
 
 const MAX_PROFILE_BYTES: usize = 2 * 1024 * 1024;
@@ -30,6 +31,37 @@ pub fn encode_vpn_uri(payload: &[u8]) -> Result<Zeroizing<String>, &'static str>
 
     let encoded = URL_SAFE_NO_PAD.encode(&*envelope);
     Ok(Zeroizing::new(format!("vpn://{encoded}")))
+}
+
+/// Render a `vpn://` URI as an SVG QR image.
+/// The image contains the same secret as the URI and must be served no-store.
+pub fn encode_qr_svg(vpn_uri: &str) -> Result<Zeroizing<String>, &'static str> {
+    if !vpn_uri.starts_with("vpn://") || vpn_uri.len() <= "vpn://".len() {
+        return Err("A valid Amnezia vpn:// URI is required for QR generation");
+    }
+
+    let qr = QrCode::encode_text(vpn_uri, QrCodeEcc::Low)
+        .map_err(|_| "The Amnezia profile is too large for a single QR code")?;
+    let size = qr.size();
+    let quiet_zone = 4;
+    let view_size = size + quiet_zone * 2;
+    let mut path = String::new();
+
+    for y in 0..size {
+        for x in 0..size {
+            if qr.get_module(x, y) {
+                let x = x + quiet_zone;
+                let y = y + quiet_zone;
+                write!(&mut path, "M{x},{y}h1v1h-1z")
+                    .map_err(|_| "Could not render Amnezia QR path")?;
+            }
+        }
+    }
+
+    let svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"512\" height=\"512\" viewBox=\"0 0 {view_size} {view_size}\" shape-rendering=\"crispEdges\"><rect width=\"100%\" height=\"100%\" fill=\"#fff\"/><path fill=\"#000\" d=\"{path}\"/></svg>"
+    );
+    Ok(Zeroizing::new(svg))
 }
 
 #[cfg(test)]
@@ -101,6 +133,25 @@ PersistentKeepalive = 25
         assert!(text.contains("PresharedKey = "));
         assert!(text.contains("[Peer]"));
         assert!(text.ends_with("PersistentKeepalive = 25\n"));
+    }
+
+    #[test]
+    fn renders_a_valid_svg_qr_for_vpn_uri() {
+        let uri = encode_vpn_uri(b"[Interface]\nPrivateKey = test\n").unwrap();
+        let svg = encode_qr_svg(&uri).unwrap();
+        assert!(svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""));
+        assert!(svg.contains("viewBox=\"0 0 "));
+        assert!(svg.contains("<path fill=\"#000\" d=\"M"));
+        assert!(svg.ends_with("</svg>"));
+        assert!(!svg.contains("PrivateKey"));
+    }
+
+    #[test]
+    fn rejects_non_vpn_qr_payloads() {
+        assert_eq!(
+            encode_qr_svg("not-a-vpn-uri").unwrap_err(),
+            "A valid Amnezia vpn:// URI is required for QR generation"
+        );
     }
 
     #[test]
