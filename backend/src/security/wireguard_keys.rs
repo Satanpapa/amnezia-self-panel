@@ -126,7 +126,6 @@ pub fn decrypt_private_key(master_key: &[u8; 32], stored: &[u8]) -> Result<Zeroi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chacha20poly1305::aead::Aead as _;
 
     #[test]
     fn header_protection_key_is_random_and_uses_separate_authenticated_envelope() {
