@@ -226,3 +226,44 @@ pub async fn stop(
         peer_count: 0,
     }))
 }
+
+
+#[cfg(test)]
+mod tests {
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn runtime_operation_migration_provides_an_exclusive_start_stop_lock() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE protocol_containers (id TEXT PRIMARY KEY, status TEXT NOT NULL)")
+            .execute(&pool).await.unwrap();
+        sqlx::raw_sql(include_str!("../../migrations/0008_runtime_operation_lock.sql"))
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO protocol_containers (id, status) VALUES ('profile-a', 'preview')")
+            .execute(&pool).await.unwrap();
+
+        let start = sqlx::query(
+            "UPDATE protocol_containers SET runtime_operation = 'start' WHERE id = 'profile-a' AND runtime_operation IS NULL"
+        ).execute(&pool).await.unwrap();
+        assert_eq!(start.rows_affected(), 1);
+
+        let competing_stop = sqlx::query(
+            "UPDATE protocol_containers SET runtime_operation = 'stop' WHERE id = 'profile-a' AND runtime_operation IS NULL"
+        ).execute(&pool).await.unwrap();
+        assert_eq!(competing_stop.rows_affected(), 0);
+
+        let invalid_operation = sqlx::query(
+            "UPDATE protocol_containers SET runtime_operation = 'delete' WHERE id = 'profile-a'"
+        ).execute(&pool).await.unwrap_err();
+        assert!(invalid_operation.to_string().contains("CHECK constraint failed"));
+
+        let release = sqlx::query(
+            "UPDATE protocol_containers SET runtime_operation = NULL WHERE id = 'profile-a' AND runtime_operation = 'start'"
+        ).execute(&pool).await.unwrap();
+        assert_eq!(release.rows_affected(), 1);
+    }
+}
