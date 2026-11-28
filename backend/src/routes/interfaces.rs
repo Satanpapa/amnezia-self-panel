@@ -6,7 +6,7 @@ use axum::{
 };
 use axum_extra::extract::cookie::CookieJar;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Utc};
 
 use crate::{
@@ -394,3 +394,178 @@ pub async fn peer_stats(
     );
     Ok(response)
 }
+
+/// Revoke peers whose access deadline has passed on a running Linux host interface.
+/// This is independent of the browser UI and runs from the backend scheduler.
+pub async fn reap_expired_peers_once(state: &AppState) -> usize {
+    let runtime_status = state.runtime.status().await;
+    if runtime_status.mode != "host" || !runtime_status.can_manage_vpn {
+        return 0;
+    }
+
+    let rows = match sqlx::query(
+        "SELECT id, protocol FROM protocol_containers WHERE status = 'running' AND runtime_operation IS NULL AND protocol IN ('wireguard', 'amnezia-awg') ORDER BY created_at ASC"
+    ).fetch_all(&state.pool).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::error!("Could not list running profiles for expiry cleanup: {error}");
+            return 0;
+        }
+    };
+
+    let mut total_revoked = 0usize;
+    for row in rows {
+        let profile_id: String = match sqlx::Row::try_get(&row, "id") {
+            Ok(id) => id,
+            Err(error) => {
+                tracing::error!("Invalid profile id in expiry cleanup query: {error}");
+                continue;
+            }
+        };
+        let protocol: String = match sqlx::Row::try_get(&row, "protocol") {
+            Ok(protocol) => protocol,
+            Err(error) => {
+                tracing::error!(container_id = %profile_id, "Invalid protocol in expiry cleanup query: {error}");
+                continue;
+            }
+        };
+        let interface_name = match interface_name_for_profile(&protocol, &profile_id) {
+            Ok(name) => name,
+            Err(error) => {
+                tracing::warn!(container_id = %profile_id, error, "Could not derive interface name for expiry cleanup");
+                continue;
+            }
+        };
+
+        // Reuse the profile-operation lock to serialize expiry cleanup with start,
+        // stop, AWG edits, and client changes. While the profile remains running,
+        // UI renders this lock as SYNCING rather than STARTING.
+        let claimed = match sqlx::query(
+            "UPDATE protocol_containers SET runtime_operation = 'start' WHERE id = ? AND status = 'running' AND runtime_operation IS NULL"
+        ).bind(&profile_id).execute(&state.pool).await {
+            Ok(result) => result.rows_affected() == 1,
+            Err(error) => {
+                tracing::error!(container_id = %profile_id, "Could not claim expiry cleanup lock: {error}");
+                false
+            }
+        };
+        if !claimed {
+            continue;
+        }
+
+        match reap_profile_expired_peers(state, &profile_id, &protocol, &interface_name).await {
+            Ok(revoked) => total_revoked += revoked,
+            Err(error) => {
+                let _ = sqlx::query(
+                    "UPDATE protocol_containers SET runtime_operation = NULL WHERE id = ? AND status = 'running' AND runtime_operation = 'start'"
+                ).bind(&profile_id).execute(&state.pool).await;
+                tracing::error!(
+                    container_id = %profile_id,
+                    interface_name = %interface_name,
+                    error,
+                    "Automatic expired-peer cleanup failed; expired client records were not marked revoked"
+                );
+            }
+        }
+    }
+    total_revoked
+}
+
+async fn reap_profile_expired_peers(
+    state: &AppState,
+    profile_id: &str,
+    protocol: &str,
+    interface_name: &str,
+) -> Result<usize, &'static str> {
+    let now = Utc::now();
+    let rows = sqlx::query(
+        "SELECT id, expires_at, wireguard_public_key FROM clients WHERE container_id = ? AND enabled = 1 AND expires_at IS NOT NULL ORDER BY created_at ASC"
+    ).bind(profile_id).fetch_all(&state.pool).await
+        .map_err(|_| "Could not query expiring VPN clients")?;
+
+    let mut expired = Vec::new();
+    for row in rows {
+        let id: String = sqlx::Row::try_get(&row, "id")
+            .map_err(|_| "Invalid client id in expiry cleanup")?;
+        let expires_at: String = sqlx::Row::try_get(&row, "expires_at")
+            .map_err(|_| "Invalid client expiry in expiry cleanup")?;
+        let expiry = match DateTime::parse_from_rfc3339(&expires_at) {
+            Ok(value) => value.with_timezone(&Utc),
+            Err(_) => {
+                tracing::warn!(container_id = %profile_id, client_id = %id, "Skipping client with invalid expiry timestamp");
+                continue;
+            }
+        };
+        if expiry > now {
+            continue;
+        }
+        let public_key: Option<String> = sqlx::Row::try_get(&row, "wireguard_public_key")
+            .map_err(|_| "Invalid client public key in expiry cleanup")?;
+        expired.push((id, expires_at, public_key));
+    }
+    if expired.is_empty() {
+        return Ok(0);
+    }
+
+    let live_peers = state.runtime.peer_stats(protocol, interface_name).await
+        .map_err(|_| "Could not read live peer list before expiry cleanup")?;
+    let live_keys: HashSet<String> = live_peers.into_iter()
+        .map(|peer| peer.public_key)
+        .collect();
+
+    // Remove only public keys that actually appear on the live interface. If an
+    // operation partially succeeds and a later database commit fails, the next
+    // pass sees the peer already absent and safely completes the DB revocation.
+    for (_, _, public_key) in &expired {
+        let Some(public_key) = public_key else { continue };
+        if live_keys.contains(public_key) {
+            state.runtime.remove_peer(protocol, interface_name, public_key).await
+                .map_err(|_| "Could not remove an expired peer from the live VPN interface")?;
+        }
+    }
+
+    let mut tx = state.pool.begin().await
+        .map_err(|_| "Could not begin expired-client database update")?;
+    let mut revoked_ids = Vec::new();
+    for (client_id, expires_at, _) in &expired {
+        let result = sqlx::query(
+            "UPDATE clients SET enabled = 0 WHERE id = ? AND container_id = ? AND enabled = 1 AND expires_at = ?"
+        ).bind(client_id).bind(profile_id).bind(expires_at)
+            .execute(&mut *tx).await
+            .map_err(|_| "Could not mark expired client as revoked")?;
+        if result.rows_affected() == 1 {
+            revoked_ids.push(client_id.clone());
+        }
+    }
+
+    if !revoked_ids.is_empty() {
+        let updated = sqlx::query(
+            "UPDATE protocol_containers SET revision = revision + 1, runtime_operation = NULL WHERE id = ? AND status = 'running' AND runtime_operation = 'start'"
+        ).bind(profile_id).execute(&mut *tx).await
+            .map_err(|_| "Could not update profile revision after expiry cleanup")?;
+        if updated.rows_affected() != 1 {
+            return Err("Profile state changed during expiry cleanup");
+        }
+        let details = serde_json::json!({
+            "container_id": profile_id,
+            "client_ids": revoked_ids,
+            "revoked_count": revoked_ids.len(),
+            "runtime": "linux-host",
+            "automatic": true
+        }).to_string();
+        sqlx::query(
+            "INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (NULL, 'client.expired_and_revoked', ?)"
+        ).bind(details).execute(&mut *tx).await
+            .map_err(|_| "Could not audit automatic client expiry")?;
+    } else {
+        sqlx::query(
+            "UPDATE protocol_containers SET runtime_operation = NULL WHERE id = ? AND status = 'running' AND runtime_operation = 'start'"
+        ).bind(profile_id).execute(&mut *tx).await
+            .map_err(|_| "Could not release profile expiry cleanup lock")?;
+    }
+    let count = revoked_ids.len();
+    tx.commit().await
+        .map_err(|_| "Could not commit automatic client expiry")?;
+    Ok(count)
+}
+
