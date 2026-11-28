@@ -190,6 +190,9 @@ impl HostRuntime {
         }
         let directory = fs::canonicalize(&self.config_dir)
             .map_err(|_| "Could not resolve VPN config directory")?;
+        if !trusted_runtime_directory(&directory) {
+            return Err("VPN config directory must be owned by the runtime user and have trusted, non-writable parent directories");
+        }
         Ok(directory.join(format!("{interface_name}.conf")))
     }
 
@@ -313,12 +316,58 @@ fn trusted_system_executable(name: &str) -> Option<PathBuf> {
     None
 }
 
-fn effective_uid_is_root(status: &str) -> bool {
+fn effective_uid(status: &str) -> Option<u32> {
     status.lines()
         .find_map(|line| line.strip_prefix("Uid:"))
         .and_then(|values| values.split_ascii_whitespace().nth(1))
         .and_then(|uid| uid.parse::<u32>().ok())
-        .is_some_and(|effective_uid| effective_uid == 0)
+}
+
+fn effective_uid_is_root(status: &str) -> bool {
+    effective_uid(status) == Some(0)
+}
+
+fn current_effective_uid() -> Option<u32> {
+    fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| effective_uid(&status))
+}
+
+/// Require the final runtime directory to belong to this process and be private.
+/// Parent directories may be owned by root or this user, but cannot be writable
+/// by group/other; root-owned sticky directories (for example /tmp) are allowed.
+fn trusted_runtime_directory(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let Some(uid) = current_effective_uid() else { return false; };
+        let Ok(final_meta) = fs::metadata(path) else { return false; };
+        if final_meta.uid() != uid || final_meta.permissions().mode() & 0o077 != 0 {
+            return false;
+        }
+        let mut current = path;
+        loop {
+            let Ok(metadata) = fs::metadata(current) else { return false; };
+            let mode = metadata.permissions().mode();
+            let owned_by_trusted_user = metadata.uid() == 0 || metadata.uid() == uid;
+            let writable_by_untrusted = mode & 0o022 != 0
+                && !(metadata.uid() == 0 && mode & 0o1000 != 0);
+            if !owned_by_trusted_user || writable_by_untrusted {
+                return false;
+            }
+            if current == Path::new("/") {
+                break;
+            }
+            let Some(parent) = current.parent() else { return false; };
+            current = parent;
+        }
+        true
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
 }
 
 fn has_effective_root() -> bool {
@@ -454,6 +503,16 @@ impl RuntimeAdapter for HostRuntime {
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err("Managed VPN config path is not a regular file");
         }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if Some(metadata.uid()) != current_effective_uid()
+                || metadata.mode() & 0o077 != 0
+                || metadata.nlink() != 1
+            {
+                return Err("Managed VPN config file ownership, permissions or link count are unsafe");
+            }
+        }
         self.run_quick(binary, "down", &path).await?;
         fs::remove_file(path)
             .map_err(|_| "Interface stopped, but protected config cleanup failed")?;
@@ -543,6 +602,24 @@ mod tests {
         }
 
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_runtime_config_directories() {
+        use std::os::unix::fs::symlink;
+        let base = std::env::temp_dir()
+            .join(format!("amnezia-panel-symlink-test-{}", uuid::Uuid::new_v4()));
+        let real = base.join("real");
+        let link = base.join("link");
+        fs::create_dir_all(&real).unwrap();
+        symlink(&real, &link).unwrap();
+        let runtime = HostRuntime {
+            config_dir: link,
+            allow_mutations: false,
+        };
+        assert!(runtime.config_path("wgabcdef1234").is_err());
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
