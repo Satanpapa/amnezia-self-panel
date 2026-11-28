@@ -303,18 +303,18 @@ function App() {
     finally { setActionBusy(false); }
   }
 
-  async function downloadSubscriptionConfig() {
+  async function downloadSubscriptionExport(format: 'conf' | 'vpn') {
     if (!issuedToken) return;
     setActionBusy(true); setError('');
     try {
-      const response = await fetch('/api/subscriptions/config', {
+      const response = await fetch(format === 'vpn' ? '/api/subscriptions/vpn-uri' : '/api/subscriptions/config', {
         method: 'GET',
         credentials: 'omit',
-        headers: { Authorization: `Bearer ${issuedToken}` },
+        headers: { Authorization: \`Bearer \${issuedToken}\` },
       });
       if (!response.ok) {
         const body = await response.text();
-        let message = body || `HTTP ${response.status}`;
+        let message = body || \`HTTP \${response.status}\`;
         try { const parsed = JSON.parse(body); message = parsed.error ?? parsed.message ?? message; } catch {}
         throw new Error(message);
       }
@@ -322,13 +322,13 @@ function App() {
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = 'client.conf';
+      link.download = format === 'vpn' ? 'client.vpn' : 'client.conf';
       document.body.appendChild(link);
       link.click();
       link.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Не удалось скачать клиентский конфиг по токену');
+      setError(e instanceof Error ? e.message : 'Не удалось скачать конфигурацию клиента');
     } finally {
       setActionBusy(false);
     }
@@ -482,7 +482,7 @@ function App() {
           <div className="header-actions"><span className="user-pill">{user}</span><button className="secondary" onClick={() => void refresh()}>↻ Обновить</button><button className="secondary" onClick={logout}>Выйти</button></div>
         </header>
         {error && <div className="form-error global-error">{error}<button onClick={() => setError('')}>Закрыть</button></div>}
-        {issuedToken && <section className="token-notice"><b>{issuedTokenLabel}</b><p>Токен показывается один раз. Получить актуальный client.conf можно через GET /api/subscriptions/config, передав токен заголовком Authorization: Bearer. Токен не помещается в URL и не хранится в открытом виде на сервере.</p><code>{issuedToken}</code><div className="card-actions"><button className="primary compact" disabled={actionBusy} onClick={() => void downloadSubscriptionConfig()}>{actionBusy ? 'Подготовка…' : 'Скачать client.conf'}</button><button className="secondary compact" onClick={() => { setIssuedToken(''); setIssuedTokenLabel('Токен доступа создан'); }}>Скрыть</button></div></section>}
+        {issuedToken && <section className="token-notice"><b>{issuedTokenLabel}</b><p>Токен показывается один раз. Получить client.conf или готовый к импорту Amnezia vpn:// в файле client.vpn можно через API, передав токен заголовком Authorization: Bearer. Токен не помещается в URL и не хранится в открытом виде на сервере.</p><code>{issuedToken}</code><div className="card-actions"><button className="primary compact" disabled={actionBusy} onClick={() => void downloadSubscriptionExport('conf')}>{actionBusy ? 'Подготовка…' : 'Скачать client.conf'}</button><button className="secondary compact" disabled={actionBusy} onClick={() => void downloadSubscriptionExport('vpn')}>Скачать client.vpn</button><button className="secondary compact" onClick={() => { setIssuedToken(''); setIssuedTokenLabel('Токен доступа создан'); }}>Скрыть</button></div></section>}
 
         {section === 'overview' && <>
           <section className="hero-panel">
@@ -561,7 +561,7 @@ function App() {
                 const canRevoke = !!owner && !owner.runtime_operation && ((owner.status === 'preview' || owner.status === 'stopped') || (owner.status === 'running' && runtimeStatus?.mode === 'host' && runtimeStatus.can_manage_vpn && (owner.protocol === 'wireguard' || owner.protocol === 'amnezia-awg')));
                 const livePeer = owner ? peerStats[owner.id]?.items.find(item => item.client_id === client.id) : undefined;
                 return <div className="client-row" key={client.id}>
-                  <span><b>{client.name}</b><small>{client.note || owner?.name || 'Без заметки'}</small>{client.wireguard_public_key && <small className="public-key-line"><code title={client.wireguard_public_key}>{client.wireguard_public_key.slice(0, 18)}…</code><button className="text-action" onClick={() => void navigator.clipboard.writeText(client.wireguard_public_key!)}>Копировать public key</button>{client.enabled && <a className="text-action" href={`/api/clients/${client.id}/config`} download="client.conf">Скачать .conf</a>}<span className={client.wireguard_preshared_key_configured ? 'status-enabled' : 'muted'}>{client.wireguard_preshared_key_configured ? 'PSK ON' : 'PSK —'}</span></small>}{client.enabled && <small className="public-key-line"><button className="text-action" disabled={actionBusy} onClick={() => void rotateClientSubscriptionToken(client.id)}>Обновить токен подписки</button></small>}{client.enabled && owner && !client.wireguard_preshared_key_configured && (owner.protocol === 'wireguard' || owner.protocol === 'amnezia-awg') && <small className="public-key-line"><button className="text-action" disabled={actionBusy || !((owner.status === 'preview' || owner.status === 'stopped') && !owner.runtime_operation)} title={(owner.status === 'preview' || owner.status === 'stopped') && !owner.runtime_operation ? 'Создать зашифрованный PSK; он применится при следующем запуске VPN' : 'Останови VPN-профиль перед включением PSK'} onClick={() => void provisionClientPresharedKey(client.id)}>Включить PSK</button></small>}{client.enabled && owner && client.wireguard_preshared_key_configured && (owner.protocol === 'wireguard' || owner.protocol === 'amnezia-awg') && <small className="public-key-line"><button className="text-action" disabled={actionBusy || !((owner.status === 'preview' || owner.status === 'stopped') && !owner.runtime_operation)} title={(owner.status === 'preview' || owner.status === 'stopped') && !owner.runtime_operation ? 'Заменить PSK; новый ключ применится после скачивания конфига и запуска сервера' : 'Останови VPN-профиль перед ротацией PSK'} onClick={() => void rotateClientPresharedKey(client.id)}>Ротировать PSK</button></small>}</span>
+                  <span><b>{client.name}</b><small>{client.note || owner?.name || 'Без заметки'}</small>{client.wireguard_public_key && <small className="public-key-line"><code title={client.wireguard_public_key}>{client.wireguard_public_key.slice(0, 18)}…</code><button className="text-action" onClick={() => void navigator.clipboard.writeText(client.wireguard_public_key!)}>Копировать public key</button>{client.enabled && <a className="text-action" href={`/api/clients/${client.id}/config`} download="client.conf">Скачать .conf</a>}{client.enabled && owner && (owner.protocol === 'wireguard' || owner.protocol === 'amnezia-awg') && <a className="text-action" href={`/api/clients/${client.id}/vpn-uri`} download="client.vpn">Скачать .vpn</a>}<span className={client.wireguard_preshared_key_configured ? 'status-enabled' : 'muted'}>{client.wireguard_preshared_key_configured ? 'PSK ON' : 'PSK —'}</span></small>}{client.enabled && <small className="public-key-line"><button className="text-action" disabled={actionBusy} onClick={() => void rotateClientSubscriptionToken(client.id)}>Обновить токен подписки</button></small>}{client.enabled && owner && !client.wireguard_preshared_key_configured && (owner.protocol === 'wireguard' || owner.protocol === 'amnezia-awg') && <small className="public-key-line"><button className="text-action" disabled={actionBusy || !((owner.status === 'preview' || owner.status === 'stopped') && !owner.runtime_operation)} title={(owner.status === 'preview' || owner.status === 'stopped') && !owner.runtime_operation ? 'Создать зашифрованный PSK; он применится при следующем запуске VPN' : 'Останови VPN-профиль перед включением PSK'} onClick={() => void provisionClientPresharedKey(client.id)}>Включить PSK</button></small>}{client.enabled && owner && client.wireguard_preshared_key_configured && (owner.protocol === 'wireguard' || owner.protocol === 'amnezia-awg') && <small className="public-key-line"><button className="text-action" disabled={actionBusy || !((owner.status === 'preview' || owner.status === 'stopped') && !owner.runtime_operation)} title={(owner.status === 'preview' || owner.status === 'stopped') && !owner.runtime_operation ? 'Заменить PSK; новый ключ применится после скачивания конфига и запуска сервера' : 'Останови VPN-профиль перед ротацией PSK'} onClick={() => void rotateClientPresharedKey(client.id)}>Ротировать PSK</button></small>}</span>
                   <code>{client.assigned_ip}</code><span className="protocol-cell">{protocolNames[owner?.protocol ?? ''] ?? '—'}</span>
                   <span className={client.enabled ? 'status-enabled' : 'status-disabled'}>{client.enabled ? '● Включён' : '○ Отключён'}</span>
                   <span className="peer-activity">{livePeer && owner?.status === 'running' && runtimeStatus?.mode === 'host' ? <><small>{livePeer.active_on_server ? `RX ${formatBytes(livePeer.rx_bytes)} · TX ${formatBytes(livePeer.tx_bytes)}` : 'Не найден на интерфейсе'}</small><small>{livePeer.traffic_limit_bytes > 0 ? `Лимит ${formatBytes(livePeer.traffic_used_bytes)} / ${formatBytes(livePeer.traffic_limit_bytes)}` : `Учтено ${formatBytes(livePeer.traffic_used_bytes)} · без лимита`}</small><small>{formatHandshake(livePeer.latest_handshake_unix)}{livePeer.expired ? ' · ИСТЁК' : ''}</small></> : <><small>Учтено {formatBytes(client.traffic_used_bytes)}</small><small>{client.traffic_limit_bytes > 0 ? `Лимит ${formatBytes(client.traffic_used_bytes)} / ${formatBytes(client.traffic_limit_bytes)}` : 'Без лимита'}</small>{client.expires_at && <small>До {new Date(client.expires_at).toLocaleString()}</small>}</>}</span>
