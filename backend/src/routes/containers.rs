@@ -120,9 +120,15 @@ impl AwgSettings {
             value.validate()?;
         }
 
-        let headers = [&self.h1, &self.h2, &self.h3, &self.h4];
+        let headers = [
+            (&self.h1, 1u64),
+            (&self.h2, 2u64),
+            (&self.h3, 3u64),
+            (&self.h4, 4u64),
+        ];
         let mut ranges: Vec<(u64, u64)> = Vec::new();
-        for header in headers.into_iter().flatten() {
+        for (header, disabled_value) in headers {
+            let Some(header) = header else { continue; };
             let parts: Vec<&str> = header.split('-').collect();
             let (start, end) = match parts.as_slice() {
                 [one] => {
@@ -137,8 +143,11 @@ impl AwgSettings {
                 }
                 _ => return Err("H1-H4 must be a number or a range like 1000-2000"),
             };
-            if start < 5 || end > 2_147_483_647 {
-                return Err("H1-H4 values must be between 5 and 2147483647");
+            // AWG 3.1 reserves H1=1, H2=2, H3=3 and H4=4 to disable
+            // custom magic headers when Header Protection is used.
+            let header_disabled = start == disabled_value && end == disabled_value;
+            if (start < 5 && !header_disabled) || end > 2_147_483_647 {
+                return Err("H1-H4 values must be >=5 or use the corresponding 1/2/3/4 disable value");
             }
             if ranges.iter().any(|(a, b)| start <= *b && *a <= end) {
                 return Err("H1-H4 values and ranges must not overlap");
@@ -693,6 +702,27 @@ mod tests {
             ..Default::default()
         };
         assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn accepts_awg31_header_protection_disable_values() {
+        let settings = AwgSettings {
+            version: "3.1".into(),
+            s1: Some(12),
+            s2: Some(12),
+            s3: Some(12),
+            s4: Some(12),
+            h1: Some("1".into()),
+            h2: Some("2".into()),
+            h3: Some("3".into()),
+            h4: Some("4".into()),
+            ..Default::default()
+        };
+        assert!(settings.validate().is_ok());
+        assert!(settings.validate_header_protection().is_ok());
+
+        let invalid = AwgSettings { h1: Some("2".into()), ..settings };
+        assert!(invalid.validate().is_err());
     }
 
     #[test]
