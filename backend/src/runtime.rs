@@ -309,10 +309,11 @@ impl HostRuntime {
             Ok(Err(_)) => return Err("Could not execute VPN peer statistics command"),
             Err(_) => return Err("VPN peer statistics command timed out"),
         };
-        if output.stdout.len() > 1024 * 1024 {
+        let stdout = Zeroizing::new(output.stdout);
+        if stdout.len() > 1024 * 1024 {
             return Err("VPN peer statistics output exceeded the safety limit");
         }
-        let dump = std::str::from_utf8(&output.stdout)
+        let dump = std::str::from_utf8(&stdout)
             .map_err(|_| "VPN peer statistics output is not valid UTF-8")?;
         parse_peer_dump(dump)
     }
@@ -356,6 +357,7 @@ fn parse_peer_dump(dump: &str) -> Result<Vec<PeerRuntimeStat>, &'static str> {
     }
 
     let mut peers = Vec::new();
+    let mut seen_keys = std::collections::HashSet::new();
     for line in lines {
         let fields: Vec<&str> = line.split('\t').collect();
         if fields.len() != 8 {
@@ -366,6 +368,9 @@ fn parse_peer_dump(dump: &str) -> Result<Vec<PeerRuntimeStat>, &'static str> {
             .map_or(true, |key| key.len() != 32)
         {
             return Err("VPN peer dump contains an invalid public key");
+        }
+        if !seen_keys.insert(fields[0]) {
+            return Err("VPN peer dump contains a duplicate peer public key");
         }
         let allowed_ips = fields[3];
         let latest_handshake = fields[4].parse::<u64>()
@@ -847,6 +852,12 @@ mod tests {
     fn rejects_malformed_peer_dump_rows() {
         assert!(super::parse_peer_dump("").is_err());
         assert!(super::parse_peer_dump("header\tpublic\tport\tfwmark\nshort\trow\n").is_err());
+
+        let public = base64::engine::general_purpose::STANDARD.encode([8u8; 32]);
+        let duplicate = format!(
+            "private\tpublic\t51820\t0\n{public}\tnone\t(none)\t10.66.0.2/32\t0\t0\t0\toff\n{public}\tnone\t(none)\t10.66.0.3/32\t0\t0\t0\toff\n"
+        );
+        assert!(super::parse_peer_dump(&duplicate).is_err());
     }
 
     #[test]
