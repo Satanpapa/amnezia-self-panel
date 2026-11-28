@@ -70,10 +70,21 @@ fn append_common_awg(
     }
 }
 
-fn append_side_awg(output: &mut Zeroizing<String>, settings: &AwgSettings) {
-    // These values are configurable independently on each end of an AWG tunnel.
-    // This first profile model uses one shared set, so we emit the same values
-    // into server and client configs until per-side overrides are introduced.
+fn append_content_padding(output: &mut Zeroizing<String>, settings: &AwgSettings) {
+    // The upstream AWG guide recommends configuring content padding on both ends.
+    if let Some(value) = &settings.content_padding_addition {
+        let rendered = match value {
+            AwgPaddingRange::Number(value) => value.to_string(),
+            AwgPaddingRange::Range(value) => value.clone(),
+        };
+        let _ = writeln!(output, "ContentPaddingAddition = {rendered}");
+    }
+}
+
+/// Junk packets and CPS signatures are recommended on the initiating client.
+/// DisableCookies is also client-side and removes under-load cookie protection,
+/// so it is deliberately not copied into the server's device configuration.
+fn append_client_awg(output: &mut Zeroizing<String>, settings: &AwgSettings) {
     for (name, value) in [("Jc", settings.jc), ("Jmin", settings.jmin), ("Jmax", settings.jmax)] {
         if let Some(value) = value {
             let _ = writeln!(output, "{name} = {value}");
@@ -90,13 +101,7 @@ fn append_side_awg(output: &mut Zeroizing<String>, settings: &AwgSettings) {
             let _ = writeln!(output, "{name} = {value}");
         }
     }
-    if let Some(value) = &settings.content_padding_addition {
-        let rendered = match value {
-            AwgPaddingRange::Number(value) => value.to_string(),
-            AwgPaddingRange::Range(value) => value.clone(),
-        };
-        let _ = writeln!(output, "ContentPaddingAddition = {rendered}");
-    }
+    append_content_padding(output, settings);
     if settings.disable_cookies {
         let _ = writeln!(output, "DisableCookies = on");
     }
@@ -180,7 +185,7 @@ pub fn render_server_config(input: &ServerConfigInput<'_>) -> Result<Zeroizing<S
 
     if let Some(settings) = input.awg_settings {
         append_common_awg(&mut output, settings, input.header_protection_key);
-        append_side_awg(&mut output, settings);
+        append_content_padding(&mut output, settings);
     }
 
     let mut seen_ips = std::collections::HashSet::new();
@@ -234,7 +239,7 @@ pub fn render_client_config(input: &ClientConfigInput<'_>) -> Result<Zeroizing<S
 
     if let Some(settings) = input.awg_settings {
         append_common_awg(&mut output, settings, input.header_protection_key);
-        append_side_awg(&mut output, settings);
+        append_client_awg(&mut output, settings);
     }
 
     let _ = writeln!(output, "\n[Peer]");
@@ -295,10 +300,10 @@ mod tests {
         assert!(server.contains("HeaderProtectionKey = "));
         assert!(server.contains("RandomTrailers = on"));
         assert!(server.contains("S4 = 12"));
-        assert!(server.contains("DisableCookies = on"));
+        assert!(!server.contains("DisableCookies = on"));
         assert!(server.contains("ContentPaddingAddition = 16-32"));
-        assert!(server.contains("Jc = 5"));
-        assert!(server.contains("I1 = <r 8><t>"));
+        assert!(!server.contains("Jc = "));
+        assert!(!server.contains("I1 = "));
 
         let client_settings = settings();
         let client = render_client_config(&ClientConfigInput {
