@@ -348,18 +348,29 @@ pub async fn client_config(
     Ok(config_response("attachment; filename=\"client.conf\"", config))
 }
 
+fn subscription_bearer_token(headers: &HeaderMap) -> Result<&str, StatusCode> {
+    let authorization = headers.get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let (scheme, token) = authorization.split_once(' ')
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    if !scheme.eq_ignore_ascii_case("Bearer")
+        || token.len() != 32
+        || !token.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    Ok(token)
+}
+
 /// Token-authenticated client config endpoint. The one-time token is accepted only
 /// in the Authorization header, never in the URL or query string.
 pub async fn subscription_config(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response<Body>, (StatusCode, &'static str)> {
-    let authorization = headers.get(axum::http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .ok_or((StatusCode::UNAUTHORIZED, "A subscription bearer token is required"))?;
-    let token = authorization.strip_prefix("Bearer ")
-        .filter(|value| !value.is_empty() && value.len() <= 128)
-        .ok_or((StatusCode::UNAUTHORIZED, "A valid subscription bearer token is required"))?;
+    let token = subscription_bearer_token(&headers)
+        .map_err(|_| (StatusCode::UNAUTHORIZED, "A valid subscription bearer token is required"))?;
     let token_hash = hash_session_token(token);
     let client_id: String = sqlx::query_scalar(
         "SELECT id FROM clients WHERE subscription_token_hash = ?"
@@ -384,10 +395,10 @@ pub async fn subscription_config(
 
 #[cfg(test)]
 mod tests {
-    use super::{active_at_now, config_response};
+    use super::{active_at_now, config_response, subscription_bearer_token};
     use axum::http::{
-        header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, PRAGMA},
-        StatusCode,
+        header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, PRAGMA, AUTHORIZATION},
+        HeaderMap, StatusCode,
     };
     use zeroize::Zeroizing;
 
@@ -408,6 +419,31 @@ mod tests {
             active_at_now(true, Some("not-a-date".into())).unwrap_err(),
             StatusCode::INTERNAL_SERVER_ERROR
         );
+    }
+
+    #[test]
+    fn subscription_tokens_are_bearer_only_and_have_fixed_opaque_format() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(subscription_bearer_token(&headers), Err(StatusCode::UNAUTHORIZED));
+
+        headers.insert(AUTHORIZATION, "Bearer 0123456789abcdef0123456789abcdef".parse().unwrap());
+        assert_eq!(
+            subscription_bearer_token(&headers).unwrap(),
+            "0123456789abcdef0123456789abcdef"
+        );
+
+        headers.insert(AUTHORIZATION, "bearer 0123456789abcdef0123456789abcdef".parse().unwrap());
+        assert!(subscription_bearer_token(&headers).is_ok());
+
+        for invalid in [
+            "Bearer short",
+            "Basic 0123456789abcdef0123456789abcdef",
+            "Bearer 0123456789abcdef0123456789abcg",
+            "Bearer 0123456789abcdef0123456789abcdef extra",
+        ] {
+            headers.insert(AUTHORIZATION, invalid.parse().unwrap());
+            assert_eq!(subscription_bearer_token(&headers), Err(StatusCode::UNAUTHORIZED));
+        }
     }
 
     #[test]
