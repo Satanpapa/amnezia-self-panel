@@ -500,7 +500,7 @@ pub async fn subscription_vpn_uri(
 
 #[cfg(test)]
 mod tests {
-    use super::{active_at_now, config_response, subscription_bearer_token};
+    use super::{active_at_now, config_response, subscription_bearer_token, vpn_uri_response};
     use axum::http::{
         header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, PRAGMA, AUTHORIZATION},
         HeaderMap, StatusCode,
@@ -549,6 +549,25 @@ mod tests {
             headers.insert(AUTHORIZATION, invalid.parse().unwrap());
             assert_eq!(subscription_bearer_token(&headers), Err(StatusCode::UNAUTHORIZED));
         }
+    }
+
+    #[test]
+    fn vpn_uri_responses_are_secret_attachments_and_never_cacheable() {
+        let response = vpn_uri_response(Zeroizing::new("vpn://abc123".to_string()));
+        let headers = response.headers();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(headers.get(CONTENT_TYPE).unwrap(), "text/plain; charset=utf-8");
+        assert_eq!(
+            headers.get(CACHE_CONTROL).unwrap(),
+            "no-store, no-cache, must-revalidate, max-age=0"
+        );
+        assert_eq!(headers.get(PRAGMA).unwrap(), "no-cache");
+        assert_eq!(
+            headers.get(CONTENT_DISPOSITION).unwrap(),
+            "attachment; filename=\"client.vpn\""
+        );
+        assert_eq!(headers.get("X-Content-Type-Options").unwrap(), "nosniff");
+        assert_eq!(headers.get("X-Amnezia-Config-Status").unwrap(), "vpn-uri");
     }
 
     #[test]
