@@ -163,12 +163,14 @@ pub async fn create(
         Some((public_key, encrypted)) => (Some(public_key), Some(encrypted)),
         None => (None, None),
     };
+    let mut tx = state.pool.begin().await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not begin client creation"))?;
     let insert_result = sqlx::query(
         "INSERT INTO clients (id, container_id, name, note, assigned_ip, enabled, subscription_token_hash, traffic_limit_bytes, expires_at, wireguard_public_key, wireguard_private_key_encrypted) SELECT ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM protocol_containers WHERE id = ? AND status IN ('preview', 'stopped') AND runtime_operation IS NULL)"
     )
     .bind(&id).bind(&container_id).bind(name).bind(note.trim())
     .bind(assigned_ip.to_string()).bind(token_hash).bind(traffic_limit)
-    .bind(input.expires_at).bind(&public_key).bind(&encrypted_private_key).bind(&container_id).execute(&state.pool).await
+    .bind(input.expires_at).bind(&public_key).bind(&encrypted_private_key).bind(&container_id).execute(&mut *tx).await
     .map_err(|error| {
         if let sqlx::Error::Database(db_error) = &error {
             if db_error.is_unique_violation() || db_error.message().contains("duplicate_client_ip") {
@@ -182,14 +184,33 @@ pub async fn create(
         return Err((StatusCode::CONFLICT, "VPN profile started while the client was being created; refresh and retry"));
     }
 
+    let revision_update = sqlx::query(
+        "UPDATE protocol_containers SET revision = revision + 1 WHERE id = ? AND status IN ('preview', 'stopped') AND runtime_operation IS NULL"
+    ).bind(&container_id).execute(&mut *tx).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not advance VPN profile revision"))?;
+    if revision_update.rows_affected() != 1 {
+        return Err((StatusCode::CONFLICT, "VPN profile started while the client was being created; refresh and retry"));
+    }
+    let revision: i64 = sqlx::query_scalar("SELECT revision FROM protocol_containers WHERE id = ?")
+        .bind(&container_id).fetch_one(&mut *tx).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read VPN profile revision"))?;
+    let details = serde_json::json!({
+        "client_id": id,
+        "container_id": container_id,
+        "assigned_ip": assigned_ip.to_string(),
+        "revision": revision,
+        "runtime_applied": false
+    }).to_string();
+    sqlx::query("INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'client.created', ?)")
+        .bind(admin_id).bind(details).execute(&mut *tx).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not record client creation"))?;
+    tx.commit().await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not commit client creation"))?;
+
     let item = sqlx::query_as::<_, ClientRecord>(
         "SELECT id, container_id, name, note, assigned_ip, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, wireguard_public_key FROM clients WHERE id = ?"
     ).bind(&id).fetch_one(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read saved client"))?;
-
-    let details = serde_json::json!({"client_id": id, "container_id": container_id, "assigned_ip": assigned_ip.to_string()}).to_string();
-    let _ = sqlx::query("INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'client.created', ?)")
-        .bind(admin_id).bind(details).execute(&state.pool).await;
 
     Ok(Json(CreateClientResponse {
         item,
