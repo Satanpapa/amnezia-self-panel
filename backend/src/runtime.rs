@@ -182,6 +182,34 @@ impl RuntimeAdapter for DockerRuntime {
 }
 
 
+fn validate_interface_name(interface_name: &str) -> Result<(), &'static str> {
+    if interface_name.is_empty() || interface_name.len() > 15
+        || !interface_name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return Err("Invalid generated VPN interface name");
+    }
+    Ok(())
+}
+
+fn validate_peer_public_key(public_key: &str) -> Result<(), &'static str> {
+    if base64::engine::general_purpose::STANDARD
+        .decode(public_key)
+        .map_or(true, |key| key.len() != 32)
+    {
+        return Err("Invalid WireGuard peer public key");
+    }
+    Ok(())
+}
+
+fn validate_peer_allowed_ip(allowed_ip: &str) -> Result<(), &'static str> {
+    let address = allowed_ip.parse::<ipnet::Ipv4Net>()
+        .map_err(|_| "Invalid WireGuard peer allowed IP")?;
+    if address.prefix_len() != 32 {
+        return Err("Live peer addition requires one host IPv4 address (/32)");
+    }
+    Ok(())
+}
+
 /// Linux host runtime. Mutating operations require an explicit environment opt-in.
 pub struct HostRuntime {
     config_dir: PathBuf,
@@ -378,22 +406,9 @@ impl HostRuntime {
         if !self.allow_mutations {
             return Err("Host mutations are disabled; set HOST_RUNTIME_ALLOW_MUTATIONS=true");
         }
-        if interface_name.is_empty() || interface_name.len() > 15
-            || !interface_name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
-        {
-            return Err("Invalid generated VPN interface name");
-        }
-        if base64::engine::general_purpose::STANDARD
-            .decode(public_key)
-            .map_or(true, |key| key.len() != 32)
-        {
-            return Err("Invalid WireGuard peer public key");
-        }
-        let address = allowed_ip.parse::<ipnet::Ipv4Net>()
-            .map_err(|_| "Invalid WireGuard peer allowed IP")?;
-        if address.prefix_len() != 32 {
-            return Err("Live peer addition requires one host IPv4 address (/32)");
-        }
+        validate_interface_name(interface_name)?;
+        validate_peer_public_key(public_key)?;
+        validate_peer_allowed_ip(allowed_ip)?;
         let binary = match protocol {
             "wireguard" => "wg",
             "amnezia-awg" => "awg",
@@ -1045,6 +1060,33 @@ mod tests {
             "private\tpublic\t51820\t0\n{public}\tnone\t(none)\t10.66.0.2/32\t0\t0\t0\toff\n{public}\tnone\t(none)\t10.66.0.3/32\t0\t0\t0\toff\n"
         );
         assert!(super::parse_peer_dump(&duplicate).is_err());
+    }
+
+    #[test]
+    fn live_peer_inputs_reject_command_injection_and_non_host_routes() {
+        use super::{
+            validate_interface_name, validate_peer_allowed_ip, validate_peer_public_key,
+        };
+        use base64::Engine as _;
+
+        for invalid in ["", "a;touch", "wg test", "../wg0", "interface-name-too-long", "wg0\n"] {
+            assert!(validate_interface_name(invalid).is_err(), "accepted interface {invalid:?}");
+        }
+        for valid in ["wg0123456789", "awg_abc-123"] {
+            assert!(validate_interface_name(valid).is_ok());
+        }
+
+        let valid_key = base64::engine::general_purpose::STANDARD.encode([7_u8; 32]);
+        assert!(validate_peer_public_key(&valid_key).is_ok());
+        for invalid in ["", "not-a-key", "YQ==", "a;echo pwned"] {
+            assert!(validate_peer_public_key(invalid).is_err(), "accepted key {invalid:?}");
+        }
+
+        assert!(validate_peer_allowed_ip("10.66.0.2/32").is_ok());
+        assert!(validate_peer_allowed_ip("10.66.0.0/24").is_err());
+        assert!(validate_peer_allowed_ip("0.0.0.0/0").is_err());
+        assert!(validate_peer_allowed_ip("::1/128").is_err());
+        assert!(validate_peer_allowed_ip("10.66.0.2/32;id").is_err());
     }
 
     #[test]
