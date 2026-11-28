@@ -261,14 +261,14 @@ pub async fn disable(
         state.runtime.remove_peer(&protocol, &interface_name, &public_key).await
             .map_err(|message| (StatusCode::CONFLICT, message))?;
         runtime_applied = true;
-    } else if profile_status != "preview" && profile_status != "stopped" && profile_status != "error" {
-        return Err((StatusCode::CONFLICT, "VPN profile state does not allow client revocation"));
+    } else if profile_status != "preview" && profile_status != "stopped" {
+        return Err((StatusCode::CONFLICT, "VPN profile is in an error state; reconcile or stop the interface before revoking this client"));
     }
 
     let mut tx = state.pool.begin().await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not begin client revocation"))?;
     let result = sqlx::query(
-        "UPDATE clients SET enabled = 0 WHERE id = ? AND enabled = 1 AND EXISTS (SELECT 1 FROM protocol_containers WHERE id = ? AND runtime_operation IS NULL AND status IN ('preview', 'stopped', 'error', 'running'))"
+        "UPDATE clients SET enabled = 0 WHERE id = ? AND enabled = 1 AND EXISTS (SELECT 1 FROM protocol_containers WHERE id = ? AND runtime_operation IS NULL AND status IN ('preview', 'stopped', 'running'))"
     )
     .bind(&client_id).bind(&container_id).execute(&mut *tx).await
     .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not disable client"))?;
