@@ -31,6 +31,7 @@ Self-hosted control plane for AmneziaWG, WireGuard, OpenVPN and OpenVPN over Clo
 - [x] Protocol Studio UI with AWG profile editor, server overview, searchable/filterable client list and responsive navigation.
 - [x] Unit tests for subnet overlap and adjacency.
 - [x] RuntimeAdapter boundary and safe PreviewRuntime implementation.
+- [x] Read-only Linux host preflight for `CAP_NET_ADMIN`, TUN, kernel modules, `ip`, `wg` / `awg` and userspace daemons.
 - [x] Docker Engine connectivity adapter (read-only health probe).
 - [ ] Docker container create/start/stop/remove lifecycle.
 - [ ] VPN protocol/peer lifecycle and configuration export.
@@ -48,7 +49,7 @@ cp .env.example .env
 cargo run
 ```
 
-The API binds to `127.0.0.1:4000` by default and creates `data/amnezia-panel.db`. `RUNTIME_MODE=preview` is the safe default. Set `RUNTIME_MODE=docker` to enable a read-only Docker daemon health check.
+The API binds to `127.0.0.1:4000` by default and creates `data/amnezia-panel.db`. `RUNTIME_MODE=preview` is the safe default. Set `RUNTIME_MODE=host` for a read-only Linux preflight (CAP_NET_ADMIN, `ip`, WireGuard/AmneziaWG tools, kernel module or TUN/userspace implementation). Set `RUNTIME_MODE=docker` to enable a read-only Docker daemon health check. Host preflight does not create interfaces or peers.
 
 ### Frontend
 
@@ -95,7 +96,7 @@ The initial admin password must be 12-256 characters. Usernames are 3-32 ASCII l
 
 ## Runtime architecture
 
-The HTTP layer depends on a `RuntimeAdapter` trait rather than directly invoking Docker or shell commands. `PreviewRuntime` reports metadata-only mode. `DockerRuntime` uses Bollard to ping the local Docker daemon with a three-second timeout. Both report `can_manage_vpn=false`: the panel does not yet create, start, stop, or remove VPN containers. Docker socket access is highly privileged; do not expose the API publicly or mount the socket into an untrusted container.
+The HTTP layer depends on a `RuntimeAdapter` trait rather than directly invoking Docker or shell commands. `PreviewRuntime` reports metadata-only mode. `HostRuntime` performs a read-only Linux prerequisite probe for the official `awg` / `wg` tools, kernel modules or userspace TUN daemons, `/dev/net/tun`, and `CAP_NET_ADMIN`. `DockerRuntime` uses Bollard to ping the local Docker daemon with a three-second timeout. Both report `can_manage_vpn=false`: the panel does not yet create, start, stop, or remove VPN containers. Docker socket access is highly privileged; do not expose the API publicly or mount the socket into an untrusted container.
 
 ## Project docs
 
