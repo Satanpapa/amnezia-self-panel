@@ -145,7 +145,9 @@ impl AwgSettings {
             };
             // AWG 3.1 reserves H1=1, H2=2, H3=3 and H4=4 to disable
             // custom magic headers when Header Protection is used.
-            let header_disabled = start == disabled_value && end == disabled_value;
+            let header_disabled = self.version == "3.1"
+                && start == disabled_value
+                && end == disabled_value;
             if (start < 5 && !header_disabled) || end > 2_147_483_647 {
                 return Err("H1-H4 values must be >=5 or use the corresponding 1/2/3/4 disable value");
             }
@@ -723,6 +725,23 @@ mod tests {
 
         let invalid = AwgSettings { h1: Some("2".into()), ..settings };
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn awg_header_disable_values_are_version_gated_to_31() {
+        let old_version = AwgSettings {
+            version: "2.0".into(),
+            h1: Some("1".into()),
+            ..Default::default()
+        };
+        assert!(old_version.validate().is_err());
+
+        let awg31 = AwgSettings {
+            version: "3.1".into(),
+            h1: Some("1".into()),
+            ..Default::default()
+        };
+        assert!(awg31.validate().is_ok());
     }
 
     #[test]
