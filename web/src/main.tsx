@@ -335,7 +335,7 @@ function App() {
   }
 
   async function provisionClientPresharedKey(clientId: string) {
-    if (!window.confirm('Создать отдельный WireGuard PSK для этого устройства? Его конфигурация будет обновлена после следующего запуска остановленного VPN-профиля.')) return;
+    if (!window.confirm('Создать отдельный WireGuard PSK? Сначала скачай новый client.conf, затем запусти VPN-профиль и импортируй обновлённый конфиг на устройстве. Старый конфиг после включения PSK больше не сможет подключиться. Продолжить?')) return;
     setActionBusy(true); setError('');
     try {
       await api(`/api/clients/${clientId}/preshared-key`, { method: 'POST', body: '{}' });
