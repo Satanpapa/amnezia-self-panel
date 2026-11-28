@@ -287,6 +287,8 @@ pub struct PeerStatsItem {
     latest_handshake_unix: Option<u64>,
     rx_bytes: Option<u64>,
     tx_bytes: Option<u64>,
+    traffic_used_bytes: i64,
+    traffic_limit_bytes: i64,
 }
 
 #[derive(Serialize)]
@@ -344,7 +346,7 @@ pub async fn peer_stats(
         .collect();
 
     let rows = sqlx::query(
-        "SELECT id, name, assigned_ip, enabled, expires_at, wireguard_public_key FROM clients WHERE container_id = ? ORDER BY created_at ASC"
+        "SELECT id, name, assigned_ip, enabled, expires_at, wireguard_public_key, traffic_used_bytes, traffic_limit_bytes FROM clients WHERE container_id = ? ORDER BY created_at ASC"
     ).bind(&container_id).fetch_all(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read VPN clients"))?;
     let mut items = Vec::with_capacity(rows.len());
@@ -364,6 +366,10 @@ pub async fn peer_stats(
             .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "A client has an invalid expiry timestamp"))?;
         let public_key: Option<String> = sqlx::Row::try_get(&row, "wireguard_public_key")
             .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid client public key"))?;
+        let traffic_used_bytes: i64 = sqlx::Row::try_get(&row, "traffic_used_bytes")
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid client traffic usage"))?;
+        let traffic_limit_bytes: i64 = sqlx::Row::try_get(&row, "traffic_limit_bytes")
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid client traffic limit"))?;
         let live = public_key.as_ref().and_then(|key| by_key.get(key));
         if live.is_some() {
             tracked_count += 1;
@@ -378,6 +384,8 @@ pub async fn peer_stats(
             latest_handshake_unix: live.and_then(|peer| peer.latest_handshake_unix),
             rx_bytes: live.map(|peer| peer.rx_bytes),
             tx_bytes: live.map(|peer| peer.tx_bytes),
+            traffic_used_bytes,
+            traffic_limit_bytes,
         });
     }
 
@@ -471,6 +479,27 @@ pub async fn reap_expired_peers_once(state: &AppState) -> usize {
     total_revoked
 }
 
+fn bounded_counter(value: u64) -> i64 {
+    value.min(i64::MAX as u64) as i64
+}
+
+fn traffic_counter_delta(previous: i64, current: u64) -> u64 {
+    let current = bounded_counter(current);
+    let previous = previous.max(0);
+    if current >= previous {
+        (current - previous) as u64
+    } else {
+        // A lower runtime counter indicates that the interface or peer was
+        // recreated. Count the new counter from zero instead of underflowing.
+        current as u64
+    }
+}
+
+fn accumulated_traffic(current: i64, rx_delta: u64, tx_delta: u64) -> i64 {
+    let delta = rx_delta.saturating_add(tx_delta);
+    current.max(0).saturating_add(bounded_counter(delta))
+}
+
 async fn reap_profile_expired_peers(
     state: &AppState,
     profile_id: &str,
@@ -479,33 +508,9 @@ async fn reap_profile_expired_peers(
 ) -> Result<usize, &'static str> {
     let now = Utc::now();
     let rows = sqlx::query(
-        "SELECT id, expires_at, wireguard_public_key FROM clients WHERE container_id = ? AND enabled = 1 AND expires_at IS NOT NULL ORDER BY created_at ASC"
+        "SELECT id, expires_at, wireguard_public_key, traffic_limit_bytes, traffic_used_bytes, last_rx_bytes, last_tx_bytes FROM clients WHERE container_id = ? AND enabled = 1 ORDER BY created_at ASC"
     ).bind(profile_id).fetch_all(&state.pool).await
-        .map_err(|_| "Could not query expiring VPN clients")?;
-
-    let mut expired = Vec::new();
-    for row in rows {
-        let id: String = sqlx::Row::try_get(&row, "id")
-            .map_err(|_| "Invalid client id in expiry cleanup")?;
-        let expires_at: String = sqlx::Row::try_get(&row, "expires_at")
-            .map_err(|_| "Invalid client expiry in expiry cleanup")?;
-        let expiry = match DateTime::parse_from_rfc3339(&expires_at) {
-            Ok(value) => value.with_timezone(&Utc),
-            Err(_) => {
-                tracing::warn!(container_id = %profile_id, client_id = %id, "Skipping client with invalid expiry timestamp");
-                continue;
-            }
-        };
-        if expiry > now {
-            continue;
-        }
-        let public_key: Option<String> = sqlx::Row::try_get(&row, "wireguard_public_key")
-            .map_err(|_| "Invalid client public key in expiry cleanup")?;
-        expired.push((id, expires_at, public_key));
-    }
-    if expired.is_empty() {
-        return Ok(0);
-    }
+        .map_err(|_| "Could not query enabled VPN clients")?;
 
     match state.runtime.interface_is_up(protocol, interface_name).await {
         Ok(true) => {}
@@ -516,72 +521,137 @@ async fn reap_profile_expired_peers(
                 .map_err(|_| "Could not mark a missing interface for recovery")?;
             return Ok(0);
         }
-        Err(_) => return Err("Could not verify live VPN interface before expiry cleanup"),
+        Err(_) => return Err("Could not verify live VPN interface before policy enforcement"),
     }
 
     let live_peers = state.runtime.peer_stats(protocol, interface_name).await
-        .map_err(|_| "Could not read live peer list before expiry cleanup")?;
-    let live_keys: HashSet<String> = live_peers.into_iter()
-        .map(|peer| peer.public_key)
+        .map_err(|_| "Could not read live peer counters before policy enforcement")?;
+    let by_key: HashMap<String, PeerRuntimeStat> = live_peers.into_iter()
+        .map(|peer| (peer.public_key.clone(), peer))
         .collect();
 
-    // Remove only public keys that actually appear on the live interface. If an
-    // operation partially succeeds and a later database commit fails, the next
-    // pass sees the peer already absent and safely completes the DB revocation.
-    for (_, _, public_key) in &expired {
-        let Some(public_key) = public_key else {
-            return Err("An expired enabled client has no public key; refusing to mark it revoked");
+    // (client id, cumulative usage, last RX, last TX, revoke reason, public key)
+    let mut snapshots: Vec<(String, i64, i64, i64, Option<&'static str>, Option<String>)> = Vec::new();
+    for row in rows {
+        let client_id: String = sqlx::Row::try_get(&row, "id")
+            .map_err(|_| "Invalid client id during traffic accounting")?;
+        let expires_at: Option<String> = sqlx::Row::try_get(&row, "expires_at")
+            .map_err(|_| "Invalid client expiry during traffic accounting")?;
+        let public_key: Option<String> = sqlx::Row::try_get(&row, "wireguard_public_key")
+            .map_err(|_| "Invalid client public key during traffic accounting")?;
+        let traffic_limit: i64 = sqlx::Row::try_get(&row, "traffic_limit_bytes")
+            .map_err(|_| "Invalid client traffic limit")?;
+        let traffic_used: i64 = sqlx::Row::try_get(&row, "traffic_used_bytes")
+            .map_err(|_| "Invalid client cumulative traffic")?;
+        let last_rx: i64 = sqlx::Row::try_get(&row, "last_rx_bytes")
+            .map_err(|_| "Invalid client RX snapshot")?;
+        let last_tx: i64 = sqlx::Row::try_get(&row, "last_tx_bytes")
+            .map_err(|_| "Invalid client TX snapshot")?;
+
+        let expired = match expires_at.as_deref() {
+            Some(value) => match DateTime::parse_from_rfc3339(value) {
+                Ok(expiry) => expiry.with_timezone(&Utc) <= now,
+                Err(_) => {
+                    tracing::warn!(container_id = %profile_id, client_id = %client_id, "Skipping invalid client expiry timestamp");
+                    false
+                }
+            },
+            None => false,
         };
-        if live_keys.contains(public_key) {
+
+        let peer = public_key.as_ref().and_then(|key| by_key.get(key));
+        let (new_used, new_rx, new_tx) = if let Some(peer) = peer {
+            let rx_delta = traffic_counter_delta(last_rx, peer.rx_bytes);
+            let tx_delta = traffic_counter_delta(last_tx, peer.tx_bytes);
+            (
+                accumulated_traffic(traffic_used, rx_delta, tx_delta),
+                bounded_counter(peer.rx_bytes),
+                bounded_counter(peer.tx_bytes),
+            )
+        } else {
+            (traffic_used.max(0), last_rx.max(0), last_tx.max(0))
+        };
+
+        let quota_reached = traffic_limit > 0 && new_used >= traffic_limit;
+        let reason = if expired {
+            Some("expired")
+        } else if quota_reached {
+            Some("traffic_limit")
+        } else {
+            None
+        };
+        if reason.is_some() && public_key.is_none() {
+            return Err("An enabled client reached an access limit but has no public key");
+        }
+
+        // Save snapshots only when there was a matched peer or a policy action.
+        if peer.is_some() || reason.is_some() {
+            snapshots.push((client_id, new_used, new_rx, new_tx, reason, public_key));
+        }
+    }
+
+    // Remove only keys still present on the actual interface. If a runtime
+    // operation partially succeeds and the DB commit later fails, the next
+    // pass safely retries the DB side after observing the peer is already gone.
+    for (_, _, _, _, reason, public_key) in &snapshots {
+        if reason.is_none() {
+            continue;
+        }
+        let public_key = public_key.as_deref()
+            .ok_or("An enabled client reached an access limit but has no public key")?;
+        if by_key.contains_key(public_key) {
             state.runtime.remove_peer(protocol, interface_name, public_key).await
-                .map_err(|_| "Could not remove an expired peer from the live VPN interface")?;
+                .map_err(|_| "Could not remove a policy-revoked peer from the live VPN interface")?;
         }
     }
 
     let mut tx = state.pool.begin().await
-        .map_err(|_| "Could not begin expired-client database update")?;
-    let mut revoked_ids = Vec::new();
-    for (client_id, expires_at, _) in &expired {
+        .map_err(|_| "Could not begin client traffic accounting transaction")?;
+    let mut revoked_clients = Vec::new();
+    for (client_id, used, rx, tx_bytes, reason, _) in &snapshots {
+        let enabled = if reason.is_some() { 0 } else { 1 };
         let result = sqlx::query(
-            "UPDATE clients SET enabled = 0 WHERE id = ? AND container_id = ? AND enabled = 1 AND expires_at = ?"
-        ).bind(client_id).bind(profile_id).bind(expires_at)
+            "UPDATE clients SET traffic_used_bytes = ?, last_rx_bytes = ?, last_tx_bytes = ?, enabled = ? WHERE id = ? AND container_id = ? AND enabled = 1"
+        ).bind(used).bind(rx).bind(tx_bytes).bind(enabled).bind(client_id).bind(profile_id)
             .execute(&mut *tx).await
-            .map_err(|_| "Could not mark expired client as revoked")?;
+            .map_err(|_| "Could not persist client traffic snapshot")?;
         if result.rows_affected() == 1 {
-            revoked_ids.push(client_id.clone());
+            if let Some(reason) = reason {
+                revoked_clients.push(serde_json::json!({
+                    "client_id": client_id,
+                    "reason": reason
+                }));
+            }
         }
     }
 
-    if !revoked_ids.is_empty() {
-        let updated = sqlx::query(
-            "UPDATE protocol_containers SET revision = revision + 1, runtime_operation = NULL WHERE id = ? AND status = 'running' AND runtime_operation = 'start'"
-        ).bind(profile_id).execute(&mut *tx).await
-            .map_err(|_| "Could not update profile revision after expiry cleanup")?;
-        if updated.rows_affected() != 1 {
-            return Err("Profile state changed during expiry cleanup");
-        }
-        let revoked_count = revoked_ids.len();
+    let revoked_count = revoked_clients.len();
+    let revision_increment = i64::from(revoked_count > 0);
+    let updated = sqlx::query(
+        "UPDATE protocol_containers SET revision = revision + ?, runtime_operation = NULL WHERE id = ? AND status = 'running' AND runtime_operation = 'start'"
+    ).bind(revision_increment).bind(profile_id).execute(&mut *tx).await
+        .map_err(|_| "Could not release profile lock after traffic accounting")?;
+    if updated.rows_affected() != 1 {
+        return Err("Profile state changed during traffic accounting");
+    }
+
+    if revoked_count > 0 {
         let details = serde_json::json!({
             "container_id": profile_id,
-            "client_ids": &revoked_ids,
+            "revoked_clients": revoked_clients,
             "revoked_count": revoked_count,
-            "runtime": "linux-host",
+            "accounting": "rx_plus_tx",
             "automatic": true
         }).to_string();
         sqlx::query(
-            "INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (NULL, 'client.expired_and_revoked', ?)"
+            "INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (NULL, 'client.policy_enforced', ?)"
         ).bind(details).execute(&mut *tx).await
-            .map_err(|_| "Could not audit automatic client expiry")?;
-    } else {
-        sqlx::query(
-            "UPDATE protocol_containers SET runtime_operation = NULL WHERE id = ? AND status = 'running' AND runtime_operation = 'start'"
-        ).bind(profile_id).execute(&mut *tx).await
-            .map_err(|_| "Could not release profile expiry cleanup lock")?;
+            .map_err(|_| "Could not audit automatic VPN client policy enforcement")?;
     }
-    let count = revoked_ids.len();
+
     tx.commit().await
-        .map_err(|_| "Could not commit automatic client expiry")?;
-    Ok(count)
+        .map_err(|_| "Could not commit client traffic accounting transaction")?;
+    Ok(revoked_count)
 }
 
 #[cfg(test)]
