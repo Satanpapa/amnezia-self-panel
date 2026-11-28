@@ -85,7 +85,7 @@ pub struct AwgSettings {
 }
 
 impl AwgSettings {
-    fn validate(&self) -> Result<(), &'static str> {
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
         if !["1.5", "2.0", "3.1"].contains(&self.version.as_str()) {
             return Err("AWG version must be 1.5, 2.0 or 3.1");
         }
