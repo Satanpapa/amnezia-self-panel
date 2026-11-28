@@ -1,0 +1,1 @@
+ALTER TABLE protocol_containers ADD COLUMN awg_header_protection_key_encrypted BLOB;
