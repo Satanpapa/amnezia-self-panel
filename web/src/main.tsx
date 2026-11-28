@@ -300,6 +300,37 @@ function App() {
     finally { setActionBusy(false); }
   }
 
+  async function downloadSubscriptionConfig() {
+    if (!issuedToken) return;
+    setActionBusy(true); setError('');
+    try {
+      const response = await fetch('/api/subscriptions/config', {
+        method: 'GET',
+        credentials: 'omit',
+        headers: { Authorization: `Bearer ${issuedToken}` },
+      });
+      if (!response.ok) {
+        const body = await response.text();
+        let message = body || `HTTP ${response.status}`;
+        try { const parsed = JSON.parse(body); message = parsed.error ?? parsed.message ?? message; } catch {}
+        throw new Error(message);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'client.conf';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Не удалось скачать клиентский конфиг по токену');
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
   async function disableClient(clientId: string) {
     setActionBusy(true); setError('');
     try { await api(`/api/clients/${clientId}/disable`, { method: 'POST', body: '{}' }); await loadWorkspace(); }
@@ -405,7 +436,7 @@ function App() {
           <div className="header-actions"><span className="user-pill">{user}</span><button className="secondary" onClick={() => void refresh()}>↻ Обновить</button><button className="secondary" onClick={logout}>Выйти</button></div>
         </header>
         {error && <div className="form-error global-error">{error}<button onClick={() => setError('')}>Закрыть</button></div>}
-        {issuedToken && <section className="token-notice"><b>Токен доступа создан</b><p>Токен показывается один раз. Получить актуальный client.conf можно через GET /api/subscriptions/config, передав токен заголовком Authorization: Bearer. Токен не помещается в URL и не хранится в открытом виде на сервере.</p><code>{issuedToken}</code><button className="secondary compact" onClick={() => setIssuedToken('')}>Скрыть</button></section>}
+        {issuedToken && <section className="token-notice"><b>Токен доступа создан</b><p>Токен показывается один раз. Получить актуальный client.conf можно через GET /api/subscriptions/config, передав токен заголовком Authorization: Bearer. Токен не помещается в URL и не хранится в открытом виде на сервере.</p><code>{issuedToken}</code><div className="card-actions"><button className="primary compact" disabled={actionBusy} onClick={() => void downloadSubscriptionConfig()}>{actionBusy ? 'Подготовка…' : 'Скачать client.conf'}</button><button className="secondary compact" onClick={() => setIssuedToken('')}>Скрыть</button></div></section>}
 
         {section === 'overview' && <>
           <section className="hero-panel">
