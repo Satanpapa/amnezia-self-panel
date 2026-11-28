@@ -166,7 +166,7 @@ pub async fn server_config(
         mtu,
         peers: &peer_refs,
         awg_settings: awg_settings.as_ref(),
-        header_protection_key: header_key.as_deref().map(|key| &**key),
+        header_protection_key: header_key.as_deref(),
     }).map_err(|_| (StatusCode::CONFLICT, "Server config cannot be rendered from the stored profile"))?;
 
     let details = serde_json::json!({
@@ -279,7 +279,7 @@ pub async fn client_config(
         mtu,
         server_public_key: &server_public_key,
         awg_settings: awg_settings.as_ref(),
-        header_protection_key: header_key.as_deref().map(|key| &**key),
+        header_protection_key: header_key.as_deref(),
         persistent_keepalive: 25,
     }).map_err(|_| (StatusCode::CONFLICT, "Client config cannot be rendered from the stored profile"))?;
 
