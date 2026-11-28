@@ -46,7 +46,8 @@ Self-hosted control plane for AmneziaWG, WireGuard, OpenVPN and OpenVPN over Clo
 - [x] Authenticated one-time `POST /api/containers/:id/awg-header-protection-key` endpoint and dashboard status/button.
 - [ ] Docker container create/start/stop/remove lifecycle.
 - [x] Initial server interface start/stop and initial active-peer installation from generated configuration.
-- [ ] Live peer add/revoke/expiry synchronization and profile reload without full interface restart.
+- [x] Live peer revocation for running Linux-host WireGuard / AmneziaWG interfaces via the protocol control CLI; the API removes the peer before committing the disabled state and records whether runtime removal was applied.
+- [ ] Live peer add, automatic expiry synchronization and profile reload without full interface restart.
 - [ ] Traffic accounting, quotas and subscription URLs.
 
 ## Run locally
