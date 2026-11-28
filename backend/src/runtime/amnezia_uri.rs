@@ -64,6 +64,46 @@ mod tests {
     }
 
     #[test]
+    fn preserves_native_awg_config_payload_for_import() {
+        let native_config = br#"[Interface]
+PrivateKey = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=
+Address = 10.66.0.2/32
+DNS = 1.1.1.1
+MTU = 1280
+Jc = 5
+Jmin = 8
+Jmax = 80
+S1 = 12
+S2 = 12
+S3 = 12
+S4 = 12
+H1 = 1
+H2 = 2
+H3 = 3
+H4 = 4
+PresharedKey = bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb=
+
+[Peer]
+PublicKey = ccccccccccccccccccccccccccccccccccccccccccc=
+Endpoint = vpn.example.com:443
+AllowedIPs = 10.66.0.0/24
+PersistentKeepalive = 25
+"#;
+        let uri = encode_vpn_uri(native_config).unwrap();
+        let encoded = uri.strip_prefix("vpn://").unwrap();
+        let envelope = URL_SAFE_NO_PAD.decode(encoded).unwrap();
+        let mut decoded = Vec::new();
+        ZlibDecoder::new(&envelope[4..]).read_to_end(&mut decoded).unwrap();
+        assert_eq!(decoded, native_config);
+        let text = String::from_utf8(decoded).unwrap();
+        assert!(text.starts_with("[Interface]"));
+        assert!(text.contains("Jc = 5"));
+        assert!(text.contains("PresharedKey = "));
+        assert!(text.contains("[Peer]"));
+        assert!(text.ends_with("PersistentKeepalive = 25\n"));
+    }
+
+    #[test]
     fn rejects_empty_and_oversized_payloads() {
         assert_eq!(encode_vpn_uri(b"").unwrap_err(), "Amnezia profile payload is empty");
         let too_large = vec![b'x'; MAX_PROFILE_BYTES + 1];
