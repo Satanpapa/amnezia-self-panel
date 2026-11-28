@@ -8,6 +8,7 @@ use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
 const KEY_ENVELOPE_VERSION: &[u8; 4] = b"WGK1";
+const HEADER_PROTECTION_ENVELOPE_VERSION: &[u8; 4] = b"HPK1";
 
 /// Generate a WireGuard-compatible Curve25519 keypair.
 pub fn generate_keypair() -> (Zeroizing<[u8; 32]>, String) {
@@ -36,6 +37,71 @@ pub fn encrypt_private_key(master_key: &[u8; 32], private_key: &[u8; 32]) -> Res
     Ok(stored)
 }
 
+/// Generate a cryptographically random 32-byte AmneziaWG header-protection key.
+pub fn generate_header_protection_key() -> Zeroizing<[u8; 32]> {
+    let mut key = Zeroizing::new([0u8; 32]);
+    OsRng.fill_bytes(&mut *key);
+    key
+}
+
+/// Encrypt a header-protection secret with a distinct versioned envelope.
+pub fn encrypt_header_protection_key(
+    master_key: &[u8; 32],
+    secret: &[u8; 32],
+) -> Result<Vec<u8>, &'static str> {
+    encrypt_versioned_secret(master_key, secret, HEADER_PROTECTION_ENVELOPE_VERSION)
+}
+
+fn encrypt_versioned_secret(
+    master_key: &[u8; 32],
+    secret: &[u8; 32],
+    version: &[u8; 4],
+) -> Result<Vec<u8>, &'static str> {
+    let cipher = ChaCha20Poly1305::new_from_slice(master_key)
+        .map_err(|_| "Invalid WireGuard master key")?;
+    let mut nonce_bytes = [0u8; 12];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher.encrypt(nonce, secret.as_ref())
+        .map_err(|_| "Could not encrypt header-protection key")?;
+    let mut stored = Vec::with_capacity(version.len() + nonce_bytes.len() + ciphertext.len());
+    stored.extend_from_slice(version);
+    stored.extend_from_slice(&nonce_bytes);
+    stored.extend_from_slice(&ciphertext);
+    Ok(stored)
+}
+
+/// Decrypt the header-protection key only for an authorized runtime/config path.
+pub fn decrypt_header_protection_key(
+    master_key: &[u8; 32],
+    stored: &[u8],
+) -> Result<Zeroizing<[u8; 32]>, &'static str> {
+    decrypt_versioned_secret(master_key, stored, HEADER_PROTECTION_ENVELOPE_VERSION)
+}
+
+fn decrypt_versioned_secret(
+    master_key: &[u8; 32],
+    stored: &[u8],
+    expected_version: &[u8; 4],
+) -> Result<Zeroizing<[u8; 32]>, &'static str> {
+    if stored.len() < 4 + 12 + 16 {
+        return Err("Encrypted header-protection key is truncated");
+    }
+    if &stored[..4] != expected_version {
+        return Err("Unsupported encrypted header-protection key format");
+    }
+    let cipher = ChaCha20Poly1305::new_from_slice(master_key)
+        .map_err(|_| "Invalid WireGuard master key")?;
+    let nonce = Nonce::from_slice(&stored[4..16]);
+    let plaintext = Zeroizing::new(
+        cipher.decrypt(nonce, &stored[16..])
+            .map_err(|_| "Could not authenticate encrypted header-protection key")?
+    );
+    let key: [u8; 32] = plaintext.as_slice().try_into()
+        .map_err(|_| "Decrypted header-protection key has an invalid length")?;
+    Ok(Zeroizing::new(key))
+}
+
 /// Decrypt a stored private key for an authorized configuration-export path.
 /// Plaintext buffers are zeroized when dropped.
 pub fn decrypt_private_key(master_key: &[u8; 32], stored: &[u8]) -> Result<Zeroizing<[u8; 32]>, &'static str> {
@@ -61,6 +127,27 @@ pub fn decrypt_private_key(master_key: &[u8; 32], stored: &[u8]) -> Result<Zeroi
 mod tests {
     use super::*;
     use chacha20poly1305::aead::Aead as _;
+
+    #[test]
+    fn header_protection_key_is_random_and_uses_separate_authenticated_envelope() {
+        let master = [9u8; 32];
+        let first = generate_header_protection_key();
+        let second = generate_header_protection_key();
+        assert_ne!(&*first, &*second);
+
+        let encrypted_a = encrypt_header_protection_key(&master, &first).unwrap();
+        let encrypted_b = encrypt_header_protection_key(&master, &first).unwrap();
+        assert_ne!(encrypted_a, encrypted_b);
+        assert_eq!(&encrypted_a[..4], b"HPK1");
+        assert_eq!(&*decrypt_header_protection_key(&master, &encrypted_a).unwrap(), &*first);
+        assert!(decrypt_header_protection_key(&[8u8; 32], &encrypted_a).is_err());
+
+        let mut tampered = encrypted_a.clone();
+        *tampered.last_mut().unwrap() ^= 1;
+        assert!(decrypt_header_protection_key(&master, &tampered).is_err());
+        assert!(decrypt_private_key(&master, &encrypted_a).is_err());
+        assert!(decrypt_header_protection_key(&master, &encrypt_private_key(&master, &[0u8; 32]).unwrap()).is_err());
+    }
 
     #[test]
     fn generates_valid_base64_curve25519_keypair() {
