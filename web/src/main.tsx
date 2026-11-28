@@ -56,7 +56,9 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, { ...init, credentials: 'include', headers });
   if (!response.ok) {
     const body = await response.text();
-    let message = body || `HTTP ${response.status}`;
+    let message = response.status === 429
+      ? 'Слишком много неудачных попыток входа. Подожди минуту и попробуй снова.'
+      : body || `HTTP ${response.status}`;
     try { const parsed = JSON.parse(body); message = parsed.error ?? parsed.message ?? message; } catch {}
     throw new Error(message);
   }
