@@ -10,6 +10,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use base64::Engine as _;
 use bollard::Docker;
 use serde::Serialize;
 use tokio::process::Command;
@@ -350,13 +351,13 @@ impl HostRuntime {
 fn parse_peer_dump(dump: &str) -> Result<Vec<PeerRuntimeStat>, &'static str> {
     let mut lines = dump.lines();
     let interface_line = lines.next().ok_or("VPN peer dump is empty")?;
-    if interface_line.split('\\t').count() != 4 {
+    if interface_line.split('\t').count() != 4 {
         return Err("VPN peer dump has an invalid interface header");
     }
 
     let mut peers = Vec::new();
     for line in lines {
-        let fields: Vec<&str> = line.split('\\t').collect();
+        let fields: Vec<&str> = line.split('\t').collect();
         if fields.len() != 8 {
             return Err("VPN peer dump contains a malformed peer row");
         }
@@ -682,7 +683,8 @@ impl RuntimeAdapter for HostRuntime {
         interface_name: &str,
     ) -> Result<Vec<PeerRuntimeStat>, &'static str> {
         self.run_peer_dump(protocol, interface_name).await
-    }}
+    }
+}
 
 pub fn interface_name_for_profile(protocol: &str, profile_id: &str) -> Result<String, &'static str> {
     let prefix = match protocol {
@@ -827,7 +829,7 @@ mod tests {
     fn parses_peer_dump_without_exposing_secret_columns() {
         let public = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
         let dump = format!(
-            "private-public-key\\tserver-public-key\\t51820\\t0\\n{public}\\tnone\\t198.51.100.10:12345\\t10.66.0.2/32\\t1700000000\\t1024\\t2048\\t25\\n"
+            "private-public-key\tserver-public-key\t51820\t0\n{public}\tnone\t198.51.100.10:12345\t10.66.0.2/32\t1700000000\t1024\t2048\t25\n"
         );
         let stats = super::parse_peer_dump(&dump).unwrap();
         assert_eq!(stats.len(), 1);
@@ -843,7 +845,7 @@ mod tests {
     #[test]
     fn rejects_malformed_peer_dump_rows() {
         assert!(super::parse_peer_dump("").is_err());
-        assert!(super::parse_peer_dump("header\\tpublic\\tport\\tfwmark\\nshort\\trow\\n").is_err());
+        assert!(super::parse_peer_dump("header\tpublic\tport\tfwmark\nshort\trow\n").is_err());
     }
 
     #[test]
