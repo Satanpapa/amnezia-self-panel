@@ -340,14 +340,14 @@ function App() {
               <div className="form-section-title">03 / MAGIC HEADERS</div>
               {(['h1','h2','h3','h4'] as const).map((key, index) => <label key={key}>H{index + 1} · {['init','response','cookie','data'][index]}<input value={awgDraft[key]} onChange={e => setAwgDraft({...awgDraft,[key]:e.target.value})} placeholder="Например, 100000-200000" /></label>)}
               <div className="form-section-title">04 / CPS SIGNATURE CHAIN</div>
-              {(['i1','i2','i3','i4','i5'] as const).map((key, index) => <label key={key}>I{index + 1} · signature<input value={awgDraft[key]} onChange={e => setAwgDraft({...awgDraft,[key]:e.target.value})} placeholder="<r 128> или <b 0x...>" /></label>)}
+              {(['i1','i2','i3','i4','i5'] as const).map((key, index) => <label key={key}>I{index + 1} · signature<input maxLength={1024} value={awgDraft[key]} onChange={e => setAwgDraft({...awgDraft,[key]:e.target.value})} placeholder="<r 128> или <b 0x...>" /></label>)}
               {awgDraft.version === '3.1' && <>
                 <div className="form-section-title">05 / TRANSPORT PROTECTION · 3.1</div>
-                <label>ContentPaddingAddition<input type="text" inputMode="numeric" value={awgDraft.content_padding_addition} onChange={e => setAwgDraft({...awgDraft,content_padding_addition:e.target.value})} placeholder="Число или диапазон, например 16-32" /></label>
+                <label>ContentPaddingAddition<input type="text" inputMode="numeric" value={awgDraft.content_padding_addition} onChange={e => setAwgDraft({...awgDraft,content_padding_addition:e.target.value})} placeholder="0–65535 или диапазон, например 16-32" /></label>
                 <label className="check-label"><input type="checkbox" checked={awgDraft.random_trailers} onChange={e => setAwgDraft({...awgDraft,random_trailers:e.target.checked})} /> RandomTrailers</label>
                 <label className="check-label"><input type="checkbox" checked={awgDraft.disable_cookies} onChange={e => setAwgDraft({...awgDraft,disable_cookies:e.target.checked})} /> DisableCookies</label>
               </>}
-              <div className="awg-footnote">H1–H4 могут быть числами или диапазонами без пересечений. I1–I5 — CPS-цепочка; формат проверяется базово. Для AWG 3.1 здесь хранятся флаги RandomTrailers / DisableCookies и ContentPaddingAddition. HeaderProtectionKey можно создать для AWG 3.1 после установки S1–S4 не меньше 12; он хранится только в зашифрованном виде и не показывается в UI.</div>
+              <div className="awg-footnote">H1–H4 могут быть числами или диапазонами без пересечений. I1–I5 — CPS-цепочка; суммарно не более 3000 символов. Для AWG 3.1 здесь хранятся флаги RandomTrailers / DisableCookies и ContentPaddingAddition. HeaderProtectionKey можно создать для AWG 3.1 после установки S1–S4 не меньше 12; он хранится только в зашифрованном виде и не показывается в UI.</div>
             </>}
             <div className="form-actions"><span>PREVIEW · Сохранение не запускает VPN и не применяет настройки к серверу.</span><button className="primary" disabled={actionBusy}>{actionBusy ? 'Сохранение…' : editingAwgId ? 'Сохранить новую ревизию AWG' : 'Создать профиль'}</button></div>
           </form>}
