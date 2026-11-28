@@ -69,7 +69,7 @@ Open the Vite URL (normally http://127.0.0.1:5173). The dev server proxies `/api
 - `POST /api/auth/login`
 - `GET /api/auth/me`
 - `POST /api/auth/logout`
-- `GET /api/runtime/status` (authenticated)
+- `GET /api/runtime/status` (authenticated; reports Docker/preview state and whether `WIREGUARD_MASTER_KEY` is configured)
 - `GET /api/containers` / `POST /api/containers`
 - `PUT /api/containers/:container_id/awg-profile` (authenticated, revision-checked metadata update)
 - `POST /api/containers/:container_id/wireguard-server-key` (one-time encrypted server-key provisioning)
