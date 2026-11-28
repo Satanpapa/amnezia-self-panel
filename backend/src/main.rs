@@ -75,6 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/containers", get(containers::list).post(containers::create))
         .route("/api/containers/{container_id}/awg-profile", axum::routing::put(containers::update_awg_profile))
         .route("/api/containers/{container_id}/wireguard-server-key", axum::routing::post(containers::provision_wireguard_server_key))
+        .route("/api/containers/{container_id}/awg-header-protection-key", axum::routing::post(containers::provision_awg_header_protection_key))
         .route("/api/containers/{container_id}/clients", axum::routing::post(clients::create))
         .route("/api/clients", get(clients::list))
         .route("/api/clients/{client_id}/disable", axum::routing::post(clients::disable))
