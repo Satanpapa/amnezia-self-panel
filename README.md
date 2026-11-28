@@ -79,7 +79,7 @@ AmneziaWG profiles are submitted with `awg_settings` when creating an `amnezia-a
 - `GET /api/clients`
 - `POST /api/clients/:client_id/disable`
 
-For AmneziaWG/WireGuard client creation, configure `WIREGUARD_MASTER_KEY` in the backend `.env` as 64 hex characters (32 random bytes). Generate it once with `openssl rand -hex 32`. Back it up securely outside the database: losing it makes encrypted client private keys unrecoverable. Do not rotate it without a migration/rewrapping procedure.
+For AmneziaWG/WireGuard key provisioning, configure `WIREGUARD_MASTER_KEY` in the backend `.env` as 64 hex characters (32 random bytes). Generate it once with `openssl rand -hex 32`. The backend keeps the decoded master key in a zeroizing memory wrapper and zeroizes the temporary decoded input buffer on drop. Back it up securely outside the database: losing it makes encrypted private keys unrecoverable. Do not rotate it without a migration/rewrapping procedure.
 
 The initial admin password must be 12-256 characters. Usernames are 3-32 ASCII letters, digits, underscore or hyphen.
 
