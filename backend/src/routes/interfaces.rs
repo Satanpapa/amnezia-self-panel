@@ -6,7 +6,7 @@ use axum::{
 };
 use axum_extra::extract::cookie::CookieJar;
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 
 use crate::{
