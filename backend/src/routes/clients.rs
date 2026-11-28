@@ -31,6 +31,7 @@ pub struct ClientRecord {
     pub expires_at: Option<String>,
     pub created_at: String,
     pub wireguard_public_key: Option<String>,
+    pub wireguard_preshared_key_configured: bool,
 }
 
 #[derive(Deserialize)]
@@ -78,11 +79,11 @@ pub async fn list(
     authenticated_admin(&state, &jar).await?;
     let items = if let Some(container_id) = query.container_id {
         sqlx::query_as::<_, ClientRecord>(
-            "SELECT id, container_id, name, note, assigned_ip, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, wireguard_public_key FROM clients WHERE container_id = ? ORDER BY created_at DESC"
+            "SELECT id, container_id, name, note, assigned_ip, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, wireguard_public_key, (wireguard_preshared_key_encrypted IS NOT NULL) AS wireguard_preshared_key_configured FROM clients WHERE container_id = ? ORDER BY created_at DESC"
         ).bind(container_id).fetch_all(&state.pool).await
     } else {
         sqlx::query_as::<_, ClientRecord>(
-            "SELECT id, container_id, name, note, assigned_ip, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, wireguard_public_key FROM clients ORDER BY created_at DESC"
+            "SELECT id, container_id, name, note, assigned_ip, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, wireguard_public_key, (wireguard_preshared_key_encrypted IS NOT NULL) AS wireguard_preshared_key_configured FROM clients ORDER BY created_at DESC"
         ).fetch_all(&state.pool).await
     }.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(ClientList { items }))
@@ -261,7 +262,7 @@ pub async fn create(
             .bind(&container_id).fetch_one(&mut *tx).await
             .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read VPN profile revision"))?;
         let item = sqlx::query_as::<_, ClientRecord>(
-            "SELECT id, container_id, name, note, assigned_ip, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, wireguard_public_key FROM clients WHERE id = ?"
+            "SELECT id, container_id, name, note, assigned_ip, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, wireguard_public_key, (wireguard_preshared_key_encrypted IS NOT NULL) AS wireguard_preshared_key_configured FROM clients WHERE id = ?"
         ).bind(&id).fetch_one(&mut *tx).await
             .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read saved client"))?;
 
