@@ -9,6 +9,7 @@ use zeroize::Zeroizing;
 
 const KEY_ENVELOPE_VERSION: &[u8; 4] = b"WGK1";
 const HEADER_PROTECTION_ENVELOPE_VERSION: &[u8; 4] = b"HPK1";
+const PEER_PRESHARED_KEY_ENVELOPE_VERSION: &[u8; 4] = b"PSK1";
 
 /// Generate a WireGuard-compatible Curve25519 keypair.
 pub fn generate_keypair() -> (Zeroizing<[u8; 32]>, String) {
@@ -44,6 +45,13 @@ pub fn encrypt_private_key(master_key: &[u8; 32], private_key: &[u8; 32]) -> Res
     Ok(stored)
 }
 
+/// Generate a cryptographically random WireGuard peer preshared key.
+pub fn generate_peer_preshared_key() -> Zeroizing<[u8; 32]> {
+    let mut key = Zeroizing::new([0u8; 32]);
+    OsRng.fill_bytes(&mut *key);
+    key
+}
+
 /// Generate a cryptographically random 32-byte AmneziaWG header-protection key.
 pub fn generate_header_protection_key() -> Zeroizing<[u8; 32]> {
     let mut key = Zeroizing::new([0u8; 32]);
@@ -57,6 +65,14 @@ pub fn encrypt_header_protection_key(
     secret: &[u8; 32],
 ) -> Result<Vec<u8>, &'static str> {
     encrypt_versioned_secret(master_key, secret, HEADER_PROTECTION_ENVELOPE_VERSION)
+}
+
+/// Encrypt a peer preshared key with a distinct PSK1 envelope and AAD.
+pub fn encrypt_peer_preshared_key(
+    master_key: &[u8; 32],
+    secret: &[u8; 32],
+) -> Result<Vec<u8>, &'static str> {
+    encrypt_versioned_secret(master_key, secret, PEER_PRESHARED_KEY_ENVELOPE_VERSION)
 }
 
 fn encrypt_versioned_secret(
@@ -76,6 +92,14 @@ fn encrypt_versioned_secret(
     stored.extend_from_slice(&nonce_bytes);
     stored.extend_from_slice(&ciphertext);
     Ok(stored)
+}
+
+/// Decrypt a peer preshared key only for an authorized runtime/config path.
+pub fn decrypt_peer_preshared_key(
+    master_key: &[u8; 32],
+    stored: &[u8],
+) -> Result<Zeroizing<[u8; 32]>, &'static str> {
+    decrypt_versioned_secret(master_key, stored, PEER_PRESHARED_KEY_ENVELOPE_VERSION)
 }
 
 /// Decrypt the header-protection key only for an authorized runtime/config path.
@@ -156,6 +180,26 @@ mod tests {
         let mut wrong_version = encrypted_a.clone();
         wrong_version[..4].copy_from_slice(b"WGK1");
         assert!(decrypt_header_protection_key(&master, &wrong_version).is_err());
+    }
+
+    #[test]
+    fn peer_preshared_keys_use_separate_authenticated_envelope() {
+        let master = [11_u8; 32];
+        let first = generate_peer_preshared_key();
+        let second = generate_peer_preshared_key();
+        assert_ne!(&*first, &*second);
+
+        let encrypted = encrypt_peer_preshared_key(&master, &first).unwrap();
+        assert_eq!(&encrypted[..4], b"PSK1");
+        assert_eq!(&*decrypt_peer_preshared_key(&master, &encrypted).unwrap(), &*first);
+        assert!(decrypt_peer_preshared_key(&[12_u8; 32], &encrypted).is_err());
+        assert!(decrypt_private_key(&master, &encrypted).is_err());
+        assert!(decrypt_header_protection_key(&master, &encrypted).is_err());
+        assert!(decrypt_peer_preshared_key(&master, &encrypt_header_protection_key(&master, &first).unwrap()).is_err());
+
+        let mut tampered = encrypted;
+        *tampered.last_mut().unwrap() ^= 1;
+        assert!(decrypt_peer_preshared_key(&master, &tampered).is_err());
     }
 
     #[test]
