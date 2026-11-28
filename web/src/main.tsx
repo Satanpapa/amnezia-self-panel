@@ -437,7 +437,7 @@ function App() {
               </>}
               <div className="awg-footnote">H1–H4 могут быть числами или диапазонами без пересечений. При HeaderProtectionKey официальная рекомендация — H1=1, H2=2, H3=3, H4=4. I1–I5 — CPS-цепочка; суммарно не более 3000 символов. Для AWG 3.1 здесь хранятся флаги RandomTrailers / DisableCookies и ContentPaddingAddition. HeaderProtectionKey можно создать для AWG 3.1 после установки S1–S4 не меньше 12; он хранится только в зашифрованном виде и не показывается в UI.</div>
             </>}
-            <div className="form-actions"><span>PREVIEW · Сохранение не запускает VPN и не применяет настройки к серверу.</span><button className="primary" disabled={actionBusy}>{actionBusy ? 'Сохранение…' : editingAwgId ? 'Сохранить новую ревизию AWG' : 'Создать профиль'}</button></div>
+            <div className="form-actions"><span>СОХРАНЕНИЕ ПРОФИЛЯ · Не запускает VPN; параметры будут применены при следующем старте остановленного интерфейса.</span><button className="primary" disabled={actionBusy}>{actionBusy ? 'Сохранение…' : editingAwgId ? 'Сохранить новую ревизию AWG' : 'Создать профиль'}</button></div>
           </form>}
           {containers.length === 0 ? <div className="empty small-empty"><b>Нет профилей</b><p>Создай конфигурацию протокола, чтобы начать.</p></div> :
             <div className="container-list">{containers.map(container => renderContainerCard(container))}</div>}
