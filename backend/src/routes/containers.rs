@@ -177,6 +177,7 @@ pub struct ContainerRecord {
     pub name: String,
     pub protocol: String,
     pub status: String,
+    pub runtime_operation: Option<String>,
     pub endpoint: String,
     pub listen_port: i64,
     pub transport: String,
@@ -297,6 +298,10 @@ fn validate_transport(protocol: &str, transport: &str) -> Result<(), &'static st
     }
 }
 
+fn profile_is_stopped(status: &str, runtime_operation: Option<&str>) -> bool {
+    runtime_operation.is_none() && (status == "preview" || status == "stopped")
+}
+
 fn subnets_overlap(left: Ipv4Net, right: Ipv4Net) -> bool {
     let left_start = u32::from(left.network());
     let left_end = u32::from(left.broadcast());
@@ -311,7 +316,7 @@ pub async fn list(
 ) -> Result<Json<ContainerList>, StatusCode> {
     authenticated_admin(&state, &jar).await?;
     let items = sqlx::query_as::<_, ContainerRecord>(
-        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key, (awg_header_protection_key_encrypted IS NOT NULL) AS awg_header_protection_key_configured FROM protocol_containers ORDER BY created_at DESC"
+        "SELECT id, name, protocol, status, runtime_operation, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key, (awg_header_protection_key_encrypted IS NOT NULL) AS awg_header_protection_key_configured FROM protocol_containers ORDER BY created_at DESC"
     )
     .fetch_all(&state.pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(ContainerList { items }))
@@ -394,7 +399,7 @@ pub async fn create(
     }
 
     let item = sqlx::query_as::<_, ContainerRecord>(
-        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key, (awg_header_protection_key_encrypted IS NOT NULL) AS awg_header_protection_key_configured FROM protocol_containers WHERE id = ?"
+        "SELECT id, name, protocol, status, runtime_operation, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key, (awg_header_protection_key_encrypted IS NOT NULL) AS awg_header_protection_key_configured FROM protocol_containers WHERE id = ?"
     ).bind(&id).fetch_one(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read saved container"))?;
 
@@ -433,12 +438,15 @@ pub async fn update_awg_profile(
 
     let mut tx = state.pool.begin().await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not begin profile update"))?;
-    let has_header_protection_key = sqlx::query_scalar::<_, bool>(
-        "SELECT awg_header_protection_key_encrypted IS NOT NULL FROM protocol_containers WHERE id = ? AND protocol = 'amnezia-awg'"
+    let profile = sqlx::query_as::<_, (bool, String, Option<String>)>(
+        "SELECT awg_header_protection_key_encrypted IS NOT NULL, status, runtime_operation FROM protocol_containers WHERE id = ? AND protocol = 'amnezia-awg'"
     ).bind(&container_id).fetch_optional(&mut *tx).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read AWG profile state"))?
         .ok_or((StatusCode::NOT_FOUND, "AmneziaWG profile not found"))?;
-    if has_header_protection_key {
+    if !profile_is_stopped(&profile.1, profile.2.as_deref()) {
+        return Err((StatusCode::CONFLICT, "Stop the VPN profile before editing AmneziaWG settings"));
+    }
+    if profile.0 {
         input.settings.validate_header_protection()
             .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
     }
@@ -474,7 +482,7 @@ pub async fn update_awg_profile(
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not commit profile update"))?;
 
     let item = sqlx::query_as::<_, ContainerRecord>(
-        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key, (awg_header_protection_key_encrypted IS NOT NULL) AS awg_header_protection_key_configured FROM protocol_containers WHERE id = ?"
+        "SELECT id, name, protocol, status, runtime_operation, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key, (awg_header_protection_key_encrypted IS NOT NULL) AS awg_header_protection_key_configured FROM protocol_containers WHERE id = ?"
     ).bind(&container_id).fetch_one(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read updated profile"))?;
     Ok(Json(item))
@@ -493,14 +501,18 @@ pub async fn provision_wireguard_server_key(
     let master_key = state.wireguard_master_key.as_ref()
         .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Set WIREGUARD_MASTER_KEY before provisioning server keys"))?;
 
-    let protocol = sqlx::query_scalar::<_, String>(
-        "SELECT protocol FROM protocol_containers WHERE id = ?"
+    let profile = sqlx::query_as::<_, (String, String, Option<String>)>(
+        "SELECT protocol, status, runtime_operation FROM protocol_containers WHERE id = ?"
     ).bind(&container_id).fetch_optional(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?
         .ok_or((StatusCode::NOT_FOUND, "VPN profile not found"))?;
-    if protocol != "wireguard" && protocol != "amnezia-awg" {
+    if profile.0 != "wireguard" && profile.0 != "amnezia-awg" {
         return Err((StatusCode::BAD_REQUEST, "Server keys are only supported for WireGuard and AmneziaWG profiles"));
     }
+    if !profile_is_stopped(&profile.1, profile.2.as_deref()) {
+        return Err((StatusCode::CONFLICT, "Stop the VPN profile before provisioning server keys"));
+    }
+    let protocol = profile.0;
 
     let (private_key, public_key) = crate::security::wireguard_keys::generate_keypair();
     let encrypted = crate::security::wireguard_keys::encrypt_private_key(master_key, &private_key)
@@ -525,7 +537,7 @@ pub async fn provision_wireguard_server_key(
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not commit server keys"))?;
 
     let item = sqlx::query_as::<_, ContainerRecord>(
-        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key, (awg_header_protection_key_encrypted IS NOT NULL) AS awg_header_protection_key_configured FROM protocol_containers WHERE id = ?"
+        "SELECT id, name, protocol, status, runtime_operation, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key, (awg_header_protection_key_encrypted IS NOT NULL) AS awg_header_protection_key_configured FROM protocol_containers WHERE id = ?"
     ).bind(&container_id).fetch_one(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read provisioned profile"))?;
     Ok(Json(item))
@@ -546,11 +558,14 @@ pub async fn provision_awg_header_protection_key(
 
     let mut tx = state.pool.begin().await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not begin header protection provisioning"))?;
-    let profile = sqlx::query_as::<_, (String, bool)>(
-        "SELECT awg_settings_json, awg_header_protection_key_encrypted IS NOT NULL FROM protocol_containers WHERE id = ? AND protocol = 'amnezia-awg'"
+    let profile = sqlx::query_as::<_, (String, bool, String, Option<String>)>(
+        "SELECT awg_settings_json, awg_header_protection_key_encrypted IS NOT NULL, status, runtime_operation FROM protocol_containers WHERE id = ? AND protocol = 'amnezia-awg'"
     ).bind(&container_id).fetch_optional(&mut *tx).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read AWG profile"))?
         .ok_or((StatusCode::NOT_FOUND, "AmneziaWG profile not found"))?;
+    if !profile_is_stopped(&profile.2, profile.3.as_deref()) {
+        return Err((StatusCode::CONFLICT, "Stop the VPN profile before provisioning HeaderProtectionKey"));
+    }
     if profile.1 {
         return Err((StatusCode::CONFLICT, "HeaderProtectionKey is already provisioned; key rotation requires a separate procedure"));
     }
@@ -589,7 +604,7 @@ pub async fn provision_awg_header_protection_key(
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not commit HeaderProtectionKey"))?;
 
     let item = sqlx::query_as::<_, ContainerRecord>(
-        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key, (awg_header_protection_key_encrypted IS NOT NULL) AS awg_header_protection_key_configured FROM protocol_containers WHERE id = ?"
+        "SELECT id, name, protocol, status, runtime_operation, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key, (awg_header_protection_key_encrypted IS NOT NULL) AS awg_header_protection_key_configured FROM protocol_containers WHERE id = ?"
     ).bind(&container_id).fetch_one(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read provisioned AWG profile"))?;
     Ok(Json(item))
@@ -598,11 +613,22 @@ pub async fn provision_awg_header_protection_key(
 #[cfg(test)]
 mod tests {
     use super::{
-        subnets_overlap, validate_dns_servers, validate_endpoint, validate_transport,
+        profile_is_stopped, subnets_overlap, validate_dns_servers, validate_endpoint, validate_transport,
         AwgSettings, AwgPaddingRange,
     };
     use std::str::FromStr;
     use ipnet::Ipv4Net;
+
+
+    #[test]
+    fn profile_mutations_require_a_stopped_profile_and_no_runtime_operation() {
+        assert!(profile_is_stopped("preview", None));
+        assert!(profile_is_stopped("stopped", None));
+        assert!(!profile_is_stopped("running", None));
+        assert!(!profile_is_stopped("error", None));
+        assert!(!profile_is_stopped("stopped", Some("start")));
+        assert!(!profile_is_stopped("preview", Some("stop")));
+    }
 
     #[test]
     fn rejects_endpoint_injection_and_accepts_ip_or_hostname() {
