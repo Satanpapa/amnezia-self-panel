@@ -1,4 +1,4 @@
-use std::{collections::HashSet, str::FromStr};
+use std::{collections::HashSet, net::IpAddr, str::FromStr};
 
 use axum::{extract::State, http::StatusCode, Json};
 use axum_extra::extract::cookie::CookieJar;
@@ -135,9 +135,7 @@ impl AwgSettings {
             ranges.push((start, end));
         }
         for signature in [&self.i1, &self.i2, &self.i3, &self.i4, &self.i5].into_iter().flatten() {
-            if signature.len() > 1024 || !signature.starts_with('<') || !signature.ends_with('>') {
-                return Err("I1-I5 signatures must be at most 1024 characters and use Amnezia tag syntax");
-            }
+            validate_cps_signature(signature)?;
         }
         Ok(())
     }
@@ -201,6 +199,77 @@ pub struct CreateContainerResponse {
     notice: &'static str,
 }
 
+fn validate_cps_signature(signature: &str) -> Result<(), &'static str> {
+    if signature.is_empty() || signature.len() > 1024 || signature.contains(['\\r', '\\n']) {
+        return Err("I1-I5 signatures must be 1-1024 characters without line breaks");
+    }
+    let mut remaining = signature;
+    while !remaining.is_empty() {
+        let Some(after_open) = remaining.strip_prefix('<') else {
+            return Err("I1-I5 must be a sequence of Amnezia tags");
+        };
+        let Some(close) = after_open.find('>') else {
+            return Err("I1-I5 contains an unterminated tag");
+        };
+        let tag = &after_open[..close];
+        let parts: Vec<&str> = tag.split_ascii_whitespace().collect();
+        match parts.as_slice() {
+            ["t"] => {}
+            [kind @ ("r" | "rd" | "rc"), size] => {
+                let size = size.parse::<u16>()
+                    .map_err(|_| "I1-I5 random tag size must be an integer from 1 to 1024")?;
+                if size == 0 || size > 1024 {
+                    return Err("I1-I5 random tag size must be from 1 to 1024");
+                }
+                let _ = kind;
+            }
+            ["b", bytes] => {
+                let hex = bytes.strip_prefix("0x")
+                    .ok_or("I1-I5 byte tags must use <b 0x...> syntax")?;
+                if hex.is_empty() || hex.len() % 2 != 0 || hex.len() > 1024
+                    || !hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+                {
+                    return Err("I1-I5 byte tags must contain an even-sized hexadecimal byte sequence");
+                }
+            }
+            _ => return Err("I1-I5 contains an unsupported Amnezia CPS tag"),
+        }
+        remaining = &after_open[close + 1..];
+    }
+    Ok(())
+}
+
+fn validate_endpoint(endpoint: &str) -> bool {
+    let endpoint = endpoint.trim();
+    if endpoint.is_empty() || endpoint.len() > 253 || endpoint.chars().any(char::is_whitespace) {
+        return false;
+    }
+    let host = if endpoint.starts_with('[') && endpoint.ends_with(']') {
+        &endpoint[1..endpoint.len() - 1]
+    } else {
+        endpoint
+    };
+    if host.parse::<IpAddr>().is_ok() {
+        return true;
+    }
+    if host.contains(':') || host.starts_with('.') || host.ends_with('.') {
+        return false;
+    }
+    host.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+            && label.as_bytes().last().is_some_and(u8::is_ascii_alphanumeric)
+            && label.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
+}
+
+fn validate_dns_servers(dns: &str) -> bool {
+    let servers: Vec<&str> = dns.split(',').map(str::trim).collect();
+    !servers.is_empty()
+        && servers.iter().all(|server| !server.is_empty() && server.parse::<IpAddr>().is_ok())
+}
+
 fn validate_transport(protocol: &str, transport: &str) -> Result<(), &'static str> {
     match protocol {
         "amnezia-awg" | "wireguard" if transport != "udp" => {
@@ -249,8 +318,8 @@ pub async fn create(
         return Err((StatusCode::BAD_REQUEST, "Unsupported VPN protocol"));
     }
     let endpoint = input.endpoint.trim();
-    if endpoint.is_empty() || endpoint.len() > 253 || endpoint.chars().any(char::is_whitespace) {
-        return Err((StatusCode::BAD_REQUEST, "Endpoint must be a hostname or IP address"));
+    if !validate_endpoint(endpoint) {
+        return Err((StatusCode::BAD_REQUEST, "Endpoint must be a valid hostname or IP address"));
     }
     if !["udp", "tcp"].contains(&input.transport.as_str()) {
         return Err((StatusCode::BAD_REQUEST, "Transport must be udp or tcp"));
@@ -260,8 +329,8 @@ pub async fn create(
     if !(576..=9000).contains(&input.mtu) {
         return Err((StatusCode::BAD_REQUEST, "MTU must be between 576 and 9000"));
     }
-    if input.dns.trim().is_empty() || input.dns.len() > 128 {
-        return Err((StatusCode::BAD_REQUEST, "DNS must be 1-128 characters"));
+    if input.dns.len() > 128 || !validate_dns_servers(&input.dns) {
+        return Err((StatusCode::BAD_REQUEST, "DNS must be a comma-separated list of IPv4 or IPv6 addresses"));
     }
     let awg_settings = match (input.protocol.as_str(), input.awg_settings) {
         ("amnezia-awg", Some(settings)) => {
@@ -518,7 +587,30 @@ mod tests {
     use ipnet::Ipv4Net;
 
     #[test]
-    fn enforces_protocol_transport_compatibility() {
+    fn rejects_endpoint_injection_and_accepts_ip_or_hostname() {
+        assert!(validate_endpoint("vpn.example.com"));
+        assert!(validate_endpoint("vpn-1.example.net"));
+        assert!(validate_endpoint("192.0.2.10"));
+        assert!(validate_endpoint("2001:db8::1"));
+        assert!(validate_endpoint("[2001:db8::1]"));
+        assert!(!validate_endpoint("vpn.example.com\\nAddress=0.0.0.0/0"));
+        assert!(!validate_endpoint("vpn;touch /tmp/pwned"));
+        assert!(!validate_endpoint("bad host.example"));
+        assert!(!validate_endpoint("-bad.example"));
+    }
+
+    #[test]
+    fn accepts_only_literal_dns_server_addresses() {
+        assert!(validate_dns_servers("1.1.1.1"));
+        assert!(validate_dns_servers("1.1.1.1, 8.8.8.8"));
+        assert!(validate_dns_servers("2606:4700:4700::1111"));
+        assert!(!validate_dns_servers("1.1.1.1\\nPrivateKey=bad"));
+        assert!(!validate_dns_servers("dns.example.com"));
+        assert!(!validate_dns_servers("1.1.1.1,"));
+    }
+
+    #[test]
+    fn rejects_endpoint_injection_and_accepts_ip_or_hostname() {
         assert!(validate_transport("amnezia-awg", "udp").is_ok());
         assert!(validate_transport("wireguard", "udp").is_ok());
         assert!(validate_transport("openvpn", "tcp").is_ok());
@@ -641,9 +733,23 @@ mod tests {
 
     #[test]
     fn rejects_malformed_cps_signature_tags() {
-        let malformed = AwgSettings {
-            version: "1.5".into(), i1: Some("not-a-tag".into()), ..Default::default()
+        for malformed in [
+            "not-a-tag",
+            "<r 4>\\nPrivateKey=bad<r 4>",
+            "<unknown 4>",
+            "<r 0>",
+            "<b 0x1>",
+            "<b 0xzz>",
+            "<t",
+        ] {
+            let settings = AwgSettings {
+                version: "1.5".into(), i1: Some(malformed.into()), ..Default::default()
+            };
+            assert!(settings.validate().is_err(), "accepted malformed signature {malformed:?}");
+        }
+        let valid = AwgSettings {
+            version: "1.5".into(), i1: Some("<r 128><t><b 0x0102ff>".into()), ..Default::default()
         };
-        assert!(malformed.validate().is_err());
+        assert!(valid.validate().is_ok());
     }
 }
