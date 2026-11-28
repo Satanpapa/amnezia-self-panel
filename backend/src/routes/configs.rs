@@ -61,37 +61,40 @@ fn config_response(filename: &'static str, mut config: Zeroizing<String>) -> Res
     response
 }
 
-/// Download an admin-only server configuration draft.
-/// This does not install peers or start an interface.
-pub async fn server_config(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Path(container_id): Path<String>,
-) -> Result<Response<Body>, (StatusCode, &'static str)> {
-    let (admin_id, _) = authenticated_admin(&state, &jar).await
-        .map_err(|status| (status, "Authentication required"))?;
+/// Server configuration prepared for either download or runtime activation.
+pub struct ServerConfigDraft {
+    pub protocol: String,
+    pub revision: i64,
+    pub peer_count: usize,
+    pub config: Zeroizing<String>,
+}
+
+/// Build a server configuration from the persisted profile and currently active clients.
+/// Caller must authenticate before invoking this helper.
+pub async fn build_server_config(
+    state: &AppState,
+    container_id: &str,
+) -> Result<ServerConfigDraft, (StatusCode, &'static str)> {
     let row = sqlx::query(
         "SELECT protocol, listen_port, subnet, mtu, revision, awg_settings_json, wireguard_server_public_key, wireguard_server_private_key_encrypted, awg_header_protection_key_encrypted FROM protocol_containers WHERE id = ?"
-    ).bind(&container_id).fetch_optional(&state.pool).await
+    ).bind(container_id).fetch_optional(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?
         .ok_or((StatusCode::NOT_FOUND, "VPN profile not found"))?;
 
     let protocol: String = row.try_get("protocol")
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
     if protocol != "wireguard" && protocol != "amnezia-awg" {
-        return Err((StatusCode::BAD_REQUEST, "Server config export is only available for WireGuard and AmneziaWG"));
+        return Err((StatusCode::BAD_REQUEST, "Server config is only available for WireGuard and AmneziaWG"));
     }
-    let listen_port: i64 = row.try_get("listen_port")
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
-    let listen_port = u16::try_from(listen_port)
+    let listen_port: u16 = u16::try_from(row.try_get::<i64, _>("listen_port")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?)
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Stored listen port is invalid"))?;
     let subnet_text: String = row.try_get("subnet")
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
-    let subnet = ipnet::Ipv4Net::from_str(&subnet_text)
+    let subnet = Ipv4Net::from_str(&subnet_text)
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Stored subnet is invalid"))?;
-    let mtu: i64 = row.try_get("mtu")
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
-    let mtu = u16::try_from(mtu)
+    let mtu: u16 = u16::try_from(row.try_get::<i64, _>("mtu")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?)
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Stored MTU is invalid"))?;
     let revision: i64 = row.try_get("revision")
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
@@ -131,8 +134,8 @@ pub async fn server_config(
     };
 
     let client_rows = sqlx::query(
-        "SELECT id, assigned_ip, enabled, expires_at, wireguard_public_key FROM clients WHERE container_id = ? ORDER BY created_at ASC"
-    ).bind(&container_id).fetch_all(&state.pool).await
+        "SELECT assigned_ip, enabled, expires_at, wireguard_public_key FROM clients WHERE container_id = ? ORDER BY created_at ASC"
+    ).bind(container_id).fetch_all(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read client peers"))?;
     let mut peers_owned: Vec<(String, Ipv4Addr)> = Vec::new();
     for client in client_rows {
@@ -169,10 +172,28 @@ pub async fn server_config(
         header_protection_key: header_key.as_deref(),
     }).map_err(|_| (StatusCode::CONFLICT, "Server config cannot be rendered from the stored profile"))?;
 
+    Ok(ServerConfigDraft {
+        protocol,
+        revision,
+        peer_count: peer_refs.len(),
+        config,
+    })
+}
+
+/// Download an admin-only server configuration draft.
+pub async fn server_config(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(container_id): Path<String>,
+) -> Result<Response<Body>, (StatusCode, &'static str)> {
+    let (admin_id, _) = authenticated_admin(&state, &jar).await
+        .map_err(|status| (status, "Authentication required"))?;
+    let draft = build_server_config(&state, &container_id).await?;
+
     let details = serde_json::json!({
         "container_id": container_id,
-        "revision": revision,
-        "peer_count": peer_refs.len(),
+        "revision": draft.revision,
+        "peer_count": draft.peer_count,
         "format": "conf",
         "kind": "server",
         "runtime_applied": false
@@ -181,7 +202,7 @@ pub async fn server_config(
         .bind(admin_id).bind(details).execute(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not audit server config export"))?;
 
-    Ok(config_response("attachment; filename=\"server.conf\"", config))
+    Ok(config_response("attachment; filename=\"server.conf\"", draft.config))
 }
 
 /// Download an active client's one-use configuration draft.
