@@ -58,6 +58,13 @@ pub struct CreateClientResponse {
     notice: &'static str,
 }
 
+#[derive(Serialize)]
+pub struct RotateSubscriptionTokenResponse {
+    client_id: String,
+    subscription_token: String,
+    notice: &'static str,
+}
+
 /// Reserve the first usable address for the VPN server interface.
 fn first_available_client_ip(subnet: Ipv4Net, used: &HashSet<Ipv4Addr>) -> Option<Ipv4Addr> {
     subnet.hosts().skip(1).find(|address| !used.contains(address))
@@ -360,6 +367,66 @@ pub async fn create(
         } else {
             "Subscription token is shown once. This peer will be installed the next time the stopped VPN profile starts; a client .conf export is available separately."
         },
+    }))
+}
+
+pub async fn rotate_subscription_token(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(client_id): Path<String>,
+) -> Result<Json<RotateSubscriptionTokenResponse>, (StatusCode, &'static str)> {
+    let (admin_id, _) = authenticated_admin(&state, &jar).await
+        .map_err(|status| (status, "Authentication required"))?;
+
+    let row = sqlx::query(
+        "SELECT enabled, expires_at FROM clients WHERE id = ?"
+    ).bind(&client_id).fetch_optional(&state.pool).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?
+        .ok_or((StatusCode::NOT_FOUND, "Client not found"))?;
+    let enabled: bool = sqlx::Row::try_get(&row, "enabled")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid client state"))?;
+    if !enabled {
+        return Err((StatusCode::CONFLICT, "Cannot issue a subscription token for a disabled client"));
+    }
+    let expires_at: Option<String> = sqlx::Row::try_get(&row, "expires_at")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid client expiry"))?;
+    if let Some(value) = &expires_at {
+        let expires = chrono::DateTime::parse_from_rfc3339(value)
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Client expiry timestamp is invalid"))?;
+        if expires.with_timezone(&chrono::Utc) <= chrono::Utc::now() {
+            return Err((StatusCode::GONE, "Client access has expired"));
+        }
+    }
+
+    let subscription_token = new_session_token();
+    let token_hash = hash_session_token(&subscription_token);
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut tx = state.pool.begin().await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not begin subscription token rotation"))?;
+    let updated = sqlx::query(
+        "UPDATE clients SET subscription_token_hash = ? WHERE id = ? AND enabled = 1 AND expires_at IS ?"
+    ).bind(token_hash).bind(&client_id).bind(&expires_at)
+        .execute(&mut *tx).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not rotate subscription token"))?;
+    if updated.rows_affected() != 1 {
+        return Err((StatusCode::CONFLICT, "Client access changed while rotating the token; refresh and retry"));
+    }
+    let details = serde_json::json!({
+        "client_id": client_id,
+        "rotated_at": now,
+        "previous_token_invalidated": true
+    }).to_string();
+    sqlx::query(
+        "INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'client.subscription_token.rotated', ?)"
+    ).bind(admin_id).bind(details).execute(&mut *tx).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not audit subscription token rotation"))?;
+    tx.commit().await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not commit subscription token rotation"))?;
+
+    Ok(Json(RotateSubscriptionTokenResponse {
+        client_id,
+        subscription_token,
+        notice: "The previous subscription token is invalid. Save this new token now; it is shown only once.",
     }))
 }
 
