@@ -158,7 +158,10 @@ pub async fn create(
         let (private_key, public_key) = crate::security::wireguard_keys::generate_keypair();
         let encrypted = crate::security::wireguard_keys::encrypt_private_key(master_key, &private_key)
             .map_err(|message| (StatusCode::INTERNAL_SERVER_ERROR, message))?;
-        Some((public_key, encrypted))
+        let preshared_key = crate::security::wireguard_keys::generate_peer_preshared_key();
+        let encrypted_preshared = crate::security::wireguard_keys::encrypt_peer_preshared_key(master_key, &preshared_key)
+            .map_err(|message| (StatusCode::INTERNAL_SERVER_ERROR, message))?;
+        Some((public_key, encrypted, encrypted_preshared))
     } else {
         None
     };
@@ -201,9 +204,11 @@ pub async fn create(
     let id = Uuid::new_v4().to_string();
     let subscription_token = new_session_token();
     let token_hash = hash_session_token(&subscription_token);
-    let (public_key, encrypted_private_key) = match keypair {
-        Some((public_key, encrypted)) => (Some(public_key), Some(encrypted)),
-        None => (None, None),
+    let (public_key, encrypted_private_key, encrypted_preshared_key) = match keypair {
+        Some((public_key, encrypted, encrypted_preshared)) => {
+            (Some(public_key), Some(encrypted), Some(encrypted_preshared))
+        }
+        None => (None, None, None),
     };
     let expected_status = container_status.clone();
     let expires_at = input.expires_at.clone();
@@ -212,14 +217,15 @@ pub async fn create(
         let mut tx = state.pool.begin().await
             .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not begin client creation"))?;
         let insert_sql = if live_apply {
-            "INSERT INTO clients (id, container_id, name, note, assigned_ip, enabled, subscription_token_hash, traffic_limit_bytes, expires_at, wireguard_public_key, wireguard_private_key_encrypted) SELECT ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM protocol_containers WHERE id = ? AND status = 'running' AND runtime_operation = 'sync')"
+            "INSERT INTO clients (id, container_id, name, note, assigned_ip, enabled, subscription_token_hash, traffic_limit_bytes, expires_at, wireguard_public_key, wireguard_private_key_encrypted, wireguard_preshared_key_encrypted) SELECT ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM protocol_containers WHERE id = ? AND status = 'running' AND runtime_operation = 'sync')"
         } else {
-            "INSERT INTO clients (id, container_id, name, note, assigned_ip, enabled, subscription_token_hash, traffic_limit_bytes, expires_at, wireguard_public_key, wireguard_private_key_encrypted) SELECT ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM protocol_containers WHERE id = ? AND status = ? AND runtime_operation IS NULL)"
+            "INSERT INTO clients (id, container_id, name, note, assigned_ip, enabled, subscription_token_hash, traffic_limit_bytes, expires_at, wireguard_public_key, wireguard_private_key_encrypted, wireguard_preshared_key_encrypted) SELECT ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM protocol_containers WHERE id = ? AND status = ? AND runtime_operation IS NULL)"
         };
         let mut insert = sqlx::query(insert_sql)
             .bind(&id).bind(&container_id).bind(name).bind(note.trim())
             .bind(assigned_ip.to_string()).bind(&token_hash).bind(traffic_limit)
-            .bind(expires_at).bind(&public_key).bind(&encrypted_private_key).bind(&container_id);
+            .bind(expires_at).bind(&public_key).bind(&encrypted_private_key)
+            .bind(&encrypted_preshared_key).bind(&container_id);
         if !live_apply {
             insert = insert.bind(&expected_status);
         }
@@ -298,7 +304,23 @@ pub async fn create(
         let interface_name = interface_name.as_deref()
             .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "Live VPN interface name is missing"))?;
 
-        if let Err(add_error) = state.runtime.add_peer(&protocol, interface_name, public_key, &allowed_ip).await {
+        let preshared_key = match encrypted_preshared_key.as_deref() {
+            Some(encrypted) => Some(
+                crate::security::wireguard_keys::decrypt_peer_preshared_key(
+                    state.wireguard_master_key.as_deref()
+                        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "WIREGUARD_MASTER_KEY is not configured"))?,
+                    encrypted,
+                ).map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not decrypt new client preshared key"))?
+            ),
+            None => None,
+        };
+        if let Err(add_error) = state.runtime.add_peer(
+            &protocol,
+            interface_name,
+            public_key,
+            &allowed_ip,
+            preshared_key,
+        ).await {
             // A failed command can still leave uncertain runtime state. Attempt a
             // targeted rollback, then force explicit cleanup if either probe fails.
             let cleanup_ok = state.runtime.remove_peer(&protocol, interface_name, public_key).await.is_ok();
