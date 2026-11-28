@@ -54,7 +54,7 @@ cp .env.example .env
 cargo run
 ```
 
-The API binds to `127.0.0.1:4000` by default and creates `data/amnezia-panel.db`. `RUNTIME_MODE=preview` is the safe default. Set `RUNTIME_MODE=host` for a read-only Linux preflight (CAP_NET_ADMIN, `ip`, WireGuard/AmneziaWG tools, kernel module or TUN/userspace implementation). Set `RUNTIME_MODE=docker` to enable a read-only Docker daemon health check. Host preflight does not create interfaces or peers.
+The API binds to `127.0.0.1:4000` by default and creates `data/amnezia-panel.db`. `RUNTIME_MODE=preview` is the safe default. Set `RUNTIME_MODE=host` for the Linux host runtime (CAP_NET_ADMIN, `ip`, `wg-quick` / `awg-quick`, protocol tools, kernel module or TUN/userspace implementation). Host mutations remain disabled unless `HOST_RUNTIME_ALLOW_MUTATIONS=true` is explicitly set. Set `RUNTIME_MODE=docker` to enable a read-only Docker daemon health check. With mutations disabled, host mode performs only a prerequisite check. With the explicit opt-in enabled, the backend uses fixed `wg-quick up/down` or `awg-quick up/down` commands, no shell, and a private config directory (`0700` directory, `0600` files). Generated config files contain server private keys in plaintext while an interface is active.
 
 ### Frontend
 
@@ -104,7 +104,7 @@ The initial admin password must be 12-256 characters. Usernames are 3-32 ASCII l
 
 ## Runtime architecture
 
-The HTTP layer depends on a `RuntimeAdapter` trait rather than directly invoking Docker or shell commands. `PreviewRuntime` reports metadata-only mode. `HostRuntime` performs a read-only Linux prerequisite probe for the official `awg` / `wg` tools, kernel modules or userspace TUN daemons, `/dev/net/tun`, and `CAP_NET_ADMIN`. `DockerRuntime` uses Bollard to ping the local Docker daemon with a three-second timeout. Both report `can_manage_vpn=false`: the panel does not yet create, start, stop, or remove VPN containers. Docker socket access is highly privileged; do not expose the API publicly or mount the socket into an untrusted container.
+The HTTP layer depends on a `RuntimeAdapter` trait rather than directly invoking Docker or shell commands. `PreviewRuntime` reports metadata-only mode. `HostRuntime` checks the official `awg` / `wg`, `awg-quick` / `wg-quick` tools, kernel modules or userspace TUN daemons, `/dev/net/tun`, and `CAP_NET_ADMIN`. It can manage an interface only when `HOST_RUNTIME_ALLOW_MUTATIONS=true` is set. `DockerRuntime` uses Bollard to ping the local Docker daemon with a three-second timeout. Both report `can_manage_vpn=false`: the panel does not yet create, start, stop, or remove VPN containers. Docker socket access is highly privileged; do not expose the API publicly or mount the socket into an untrusted container.
 
 ## Project docs
 
