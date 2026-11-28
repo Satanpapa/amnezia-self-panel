@@ -6,7 +6,7 @@ import './style.css';
 type SetupStatus = { setup_required: boolean };
 type AuthResponse = { authenticated: boolean; username: string | null };
 type Health = { ok: boolean; version: string; runtime: string };
-type RuntimeStatus = { mode: string; available: boolean; engine: string; message: string; can_manage_vpn: boolean };
+type RuntimeStatus = { mode: string; available: boolean; engine: string; message: string; can_manage_vpn: boolean; wireguard_master_key_configured: boolean };
 type AwgSettings = {
   version: string; jc?: number; jmin?: number; jmax?: number; s1?: number; s2?: number;
   s3?: number; s4?: number; h1?: string; h2?: string; h3?: string; h4?: string;
@@ -286,7 +286,7 @@ function App() {
             <article><label>API / RUNTIME</label><strong className={health?.ok ? 'ok' : 'warn'}>{health?.ok ? 'ONLINE' : '—'}</strong><span>{runtimeStatus?.engine ?? '—'} · {runtimeStatus?.available ? 'доступен' : 'недоступен'}</span></article>
           </section>
           <section className="runtime-banner">
-            <div className="runtime-symbol">!</div><div><b>{runtimeStatus?.mode === 'preview' ? 'Рабочий режим: Preview' : 'Состояние runtime'}</b><p>{runtimeStatus?.message ?? 'Статус runtime пока недоступен.'}</p></div>
+            <div className="runtime-symbol">!</div><div><b>{runtimeStatus?.mode === 'preview' ? 'Рабочий режим: Preview' : 'Состояние runtime'}</b><p>{runtimeStatus?.message ?? 'Статус runtime пока недоступен.'}</p><p>Шифрование ключей WireGuard: {runtimeStatus?.wireguard_master_key_configured ? 'мастер-ключ настроен' : 'мастер-ключ не задан — создание WG/AWG-клиентов недоступно'}</p></div>
             <span className="mode-chip">{runtimeStatus?.can_manage_vpn ? 'VPN CONTROL' : 'METADATA ONLY'}</span>
           </section>
           <section className="panel">
