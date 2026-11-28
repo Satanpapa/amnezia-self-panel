@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let runtime: Arc<dyn RuntimeAdapter> = match env::var("RUNTIME_MODE").as_deref() {
         Ok("docker") => Arc::new(DockerRuntime::new()),
-        Ok("host") => Arc::new(HostRuntime),
+        Ok("host") => Arc::new(HostRuntime::new()),
         Ok("preview") | Err(_) => Arc::new(PreviewRuntime),
         Ok(other) => return Err(format!("Unsupported RUNTIME_MODE '{other}'. Use 'preview', 'host' or 'docker'.").into()),
     };
