@@ -157,7 +157,7 @@ impl HostRuntime {
     fn tools_ready(protocol: &str) -> bool {
         let ip = trusted_executable_in_system_path("ip");
         let tun = has_tun_device();
-        let net_admin = has_cap_net_admin();
+        let net_admin = has_cap_net_admin() && has_effective_root();
         match protocol {
             "wireguard" => ip && net_admin
                 && trusted_executable_in_system_path("wg") && trusted_executable_in_system_path("wg-quick")
@@ -313,6 +313,20 @@ fn trusted_system_executable(name: &str) -> Option<PathBuf> {
     None
 }
 
+fn effective_uid_is_root(status: &str) -> bool {
+    status.lines()
+        .find_map(|line| line.strip_prefix("Uid:"))
+        .and_then(|values| values.split_ascii_whitespace().nth(1))
+        .and_then(|uid| uid.parse::<u32>().ok())
+        .is_some_and(|effective_uid| effective_uid == 0)
+}
+
+fn has_effective_root() -> bool {
+    fs::read_to_string("/proc/self/status")
+        .map(|status| effective_uid_is_root(&status))
+        .unwrap_or(false)
+}
+
 fn effective_caps_include_net_admin(status: &str) -> bool {
     status.lines()
         .find_map(|line| line.strip_prefix("CapEff:"))
@@ -373,6 +387,7 @@ impl RuntimeAdapter for HostRuntime {
             } else {
                 let mut missing = Vec::new();
                 if !trusted_executable_in_system_path("ip") { missing.push("iproute2 (ip)"); }
+                if !has_effective_root() { missing.push("effective UID 0 (root)"); }
                 if !has_cap_net_admin() { missing.push("CAP_NET_ADMIN"); }
                 if !has_tun_device() && !has_kernel_module("amneziawg") && !has_kernel_module("wireguard") {
                     missing.push("/dev/net/tun or a loaded VPN kernel module");
@@ -465,7 +480,10 @@ pub fn interface_name_for_profile(protocol: &str, profile_id: &str) -> Result<St
 
 #[cfg(test)]
 mod tests {
-    use super::{effective_caps_include_net_admin, interface_name_for_profile, HostRuntime, PreviewRuntime, RuntimeAdapter};
+    use super::{
+        effective_caps_include_net_admin, effective_uid_is_root, interface_name_for_profile,
+        HostRuntime, PreviewRuntime, RuntimeAdapter,
+    };
     use std::{fs, path::PathBuf};
 
     #[tokio::test]
@@ -475,6 +493,14 @@ mod tests {
         assert!(status.available);
         assert!(!status.can_manage_vpn);
         assert_eq!(status.engine, "none");
+    }
+
+    #[test]
+    fn recognizes_effective_root_uid_from_proc_status() {
+        assert!(effective_uid_is_root("Uid:\\t0\\t0\\t0\\t0\\n"));
+        assert!(!effective_uid_is_root("Uid:\\t1000\\t1000\\t1000\\t1000\\n"));
+        assert!(!effective_uid_is_root("Uid:\\t0\\t1000\\t0\\t0\\n"));
+        assert!(!effective_uid_is_root("Name:\\ttest\\n"));
     }
 
     #[test]
