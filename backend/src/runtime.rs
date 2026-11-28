@@ -427,7 +427,7 @@ impl HostRuntime {
             .map_err(|_| "Could not create protected temporary preshared-key file")?;
         let encoded = Zeroizing::new(base64::engine::general_purpose::STANDARD.encode(secret));
         if file.write_all(encoded.as_bytes()).is_err()
-            || file.write_all(b"\\n").is_err()
+            || file.write_all(b"\n").is_err()
             || file.sync_all().is_err()
         {
             let _ = fs::remove_file(&path);
