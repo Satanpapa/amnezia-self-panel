@@ -104,7 +104,7 @@ pub async fn create(
     if let Some(expires_at) = &input.expires_at {
         let expiry = chrono::DateTime::parse_from_rfc3339(expires_at)
             .map_err(|_| (StatusCode::BAD_REQUEST, "Expiration must be an RFC3339 timestamp"))?;
-        if expiry <= chrono::Utc::now() {
+        if expiry.with_timezone(&chrono::Utc) <= chrono::Utc::now() {
             return Err((StatusCode::BAD_REQUEST, "Expiration must be in the future"));
         }
     }
@@ -199,7 +199,6 @@ pub async fn create(
         None => (None, None),
     };
     let expected_status = container_status.clone();
-    let expected_operation = if live_apply { Some("sync") } else { None };
     let expires_at = input.expires_at.clone();
 
     let creation_result: Result<(ClientRecord, i64), (StatusCode, &'static str)> = async {
