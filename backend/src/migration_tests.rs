@@ -40,6 +40,25 @@ async fn all_sqlite_migrations_apply_to_a_fresh_database() {
     .expect("client IP allocation triggers should exist");
     assert_eq!(client_ip_trigger_count, 2);
 
+    let login_throttle_table: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'auth_login_attempts'"
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("login throttle table should exist");
+    assert_eq!(login_throttle_table, 1);
+
+    for column in ["username_hash", "window_started_at", "failure_count", "blocked_until"] {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('auth_login_attempts') WHERE name = ?"
+        )
+        .bind(column)
+        .fetch_one(&pool)
+        .await
+        .expect("login throttle column should exist");
+        assert_eq!(count, 1, "missing auth throttle column {column}");
+    }
+
     let operation_lock = sqlx::query(
         "UPDATE protocol_containers SET runtime_operation = 'start' WHERE 1 = 0"
     )
