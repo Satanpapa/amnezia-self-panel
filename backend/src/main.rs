@@ -3,6 +3,9 @@ mod routes;
 mod security;
 mod runtime;
 
+#[cfg(test)]
+mod migration_tests;
+
 use std::{env, net::SocketAddr, path::Path, str::FromStr, sync::Arc};
 use zeroize::Zeroizing;
 use axum::{routing::get, Router};
