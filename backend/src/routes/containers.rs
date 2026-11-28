@@ -19,7 +19,15 @@ pub enum AwgPaddingRange {
 
 impl AwgPaddingRange {
     pub(crate) fn validate(&self) -> Result<(), &'static str> {
-        let Self::Range(value) = self else { return Ok(()) };
+        let value = match self {
+            Self::Number(number) => {
+                if *number > u16::MAX as u32 {
+                    return Err("ContentPaddingAddition must not exceed 65535 with current AmneziaWG tools");
+                }
+                return Ok(());
+            }
+            Self::Range(value) => value,
+        };
         if value.len() > 21 || value.trim() != value {
             return Err("ContentPaddingAddition must be an integer or range from 0 to 65535");
         }
@@ -46,7 +54,7 @@ impl AwgPaddingRange {
                 }
                 Ok(())
             }
-            _ => Err("ContentPaddingAddition must be a uint32 value or a range such as 16-32"),
+            _ => Err("ContentPaddingAddition must be an integer or range from 0 to 65535"),
         }
     }
 }
@@ -694,10 +702,10 @@ mod tests {
     #[test]
     fn validates_awg31_content_padding_uint32_and_ranges() {
         for value in [
-            AwgPaddingRange::Number(u32::MAX),
+            AwgPaddingRange::Number(u16::MAX as u32),
             AwgPaddingRange::Range("16".into()),
             AwgPaddingRange::Range("16-32".into()),
-            AwgPaddingRange::Range("(off)".into()),
+            AwgPaddingRange::Number(0),
         ] {
             let settings = AwgSettings {
                 version: "3.1".into(),
@@ -708,9 +716,10 @@ mod tests {
         }
 
         for value in [
+            AwgPaddingRange::Number(u16::MAX as u32 + 1),
             AwgPaddingRange::Range("32-16".into()),
-            AwgPaddingRange::Range("4294967296".into()),
-            AwgPaddingRange::Range("1-4294967296".into()),
+            AwgPaddingRange::Range("65536".into()),
+            AwgPaddingRange::Range("1-65536".into()),
             AwgPaddingRange::Range("".into()),
         ] {
             let settings = AwgSettings {
