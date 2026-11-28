@@ -18,6 +18,7 @@ Self-hosted control plane for AmneziaWG, WireGuard, OpenVPN and OpenVPN over Clo
 - [x] React setup/login screens connected to the API.
 - [x] GitHub Actions: Rust `cargo check` + `cargo test`, frontend production build.
 - [x] Preview data model for protocol containers and clients.
+- [x] Database-level trigger guards against duplicate client IP allocation during concurrent creates.
 - [x] Container/client CRUD foundations, IPv4 allocation and one-time subscription token issuance (preview only).
 - [x] Reject overlapping IPv4 address pools for newly created VPN records.
 - [x] Enforce transport compatibility in API and UI: WireGuard / AmneziaWG use UDP; OpenVPN over Cloak uses TCP.
@@ -79,7 +80,7 @@ AmneziaWG profiles are submitted with `awg_settings` when creating an `amnezia-a
 - `GET /api/clients`
 - `POST /api/clients/:client_id/disable`
 
-For AmneziaWG/WireGuard key provisioning, configure `WIREGUARD_MASTER_KEY` in the backend `.env` as 64 hex characters (32 random bytes). Generate it once with `openssl rand -hex 32`. The backend keeps the decoded master key in a zeroizing memory wrapper and zeroizes the temporary decoded input buffer on drop. Back it up securely outside the database: losing it makes encrypted private keys unrecoverable. Do not rotate it without a migration/rewrapping procedure.
+For AmneziaWG/WireGuard key provisioning, configure `WIREGUARD_MASTER_KEY` in the backend `.env` as 64 hex characters (32 random bytes). Generate it once with `openssl rand -hex 32`. The backend keeps its copied environment value, decoded bytes, and resident master key in zeroizing wrappers. Back it up securely outside the database: losing it makes encrypted private keys unrecoverable. Do not rotate it without a migration/rewrapping procedure.
 
 The initial admin password must be 12-256 characters. Usernames are 3-32 ASCII letters, digits, underscore or hyphen.
 
