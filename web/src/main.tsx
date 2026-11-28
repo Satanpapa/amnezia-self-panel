@@ -295,6 +295,20 @@ function App() {
   }
 
   const enabledCount = clients.filter(client => client.enabled).length;
+  const liveTraffic = useMemo(() => {
+    let rxBytes = 0;
+    let txBytes = 0;
+    let livePeers = 0;
+    for (const result of Object.values(peerStats)) {
+      for (const peer of result.items) {
+        if (!peer.active_on_server) continue;
+        rxBytes += peer.rx_bytes ?? 0;
+        txBytes += peer.tx_bytes ?? 0;
+        livePeers += 1;
+      }
+    }
+    return { rxBytes, txBytes, livePeers };
+  }, [peerStats]);
   const filteredClients = useMemo(() => clients.filter(client => {
     const term = clientSearch.toLowerCase();
     const matchesText = !term || [client.name, client.note, client.assigned_ip].some(value => value.toLowerCase().includes(term));
@@ -367,7 +381,7 @@ function App() {
           <span className={runtimeStatus?.available ? 'runtime-dot online' : 'runtime-dot'} />
           <div><b>{runtimeStatus?.engine ?? 'Runtime'}</b><small>{runtimeStatus?.available ? 'Сервис доступен' : 'Нет соединения'}</small></div>
         </div>
-        <div className="side-foot">CONTROL PLANE <span>v0.3.0 · PREVIEW</span></div>
+        <div className="side-foot">CONTROL PLANE <span>v0.4.0 · {runtimeStatus?.mode?.toUpperCase() ?? 'PREVIEW'}</span></div>
       </aside>
       <main>
         <header>
@@ -385,7 +399,7 @@ function App() {
           <section className="stats">
             <article><label>КОНФИГУРАЦИИ</label><strong>{containers.length.toString().padStart(2, '0')}</strong><span>Профилей в локальной БД</span></article>
             <article><label>КЛИЕНТЫ</label><strong>{clients.length.toString().padStart(2, '0')}</strong><span>{enabledCount} включено · {clients.length - enabledCount} отключено</span></article>
-            <article><label>ТРАФИК RX / TX</label><strong>—</strong><span>Сбор статистики ещё не подключён</span></article>
+            <article><label>ТРАФИК RX / TX</label><strong>{runtimeStatus?.mode === 'host' && Object.keys(peerStats).length ? formatBytes(liveTraffic.rxBytes + liveTraffic.txBytes) : '—'}</strong><span>{runtimeStatus?.mode === 'host' && Object.keys(peerStats).length ? `RX ${formatBytes(liveTraffic.rxBytes)} · TX ${formatBytes(liveTraffic.txBytes)} · ${liveTraffic.livePeers} активных пиров` : 'Доступно для запущенных host-интерфейсов'}</span></article>
             <article><label>API / RUNTIME</label><strong className={health?.ok ? 'ok' : 'warn'}>{health?.ok ? 'ONLINE' : '—'}</strong><span>{runtimeStatus?.engine ?? '—'} · {runtimeStatus?.available ? 'доступен' : 'недоступен'}</span></article>
           </section>
           <section className="runtime-banner">
