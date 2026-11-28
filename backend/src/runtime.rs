@@ -116,12 +116,17 @@ fn executable_in_path(name: &str) -> bool {
     })
 }
 
-fn has_cap_net_admin() -> bool {
-    let Ok(status) = fs::read_to_string("/proc/self/status") else { return false };
+fn effective_caps_include_net_admin(status: &str) -> bool {
     status.lines()
         .find_map(|line| line.strip_prefix("CapEff:"))
         .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())
         .is_some_and(|effective| effective & (1 << 12) != 0)
+}
+
+fn has_cap_net_admin() -> bool {
+    fs::read_to_string("/proc/self/status")
+        .map(|status| effective_caps_include_net_admin(&status))
+        .unwrap_or(false)
 }
 
 fn has_tun_device() -> bool {
@@ -202,7 +207,7 @@ impl RuntimeAdapter for HostRuntime {
 
 #[cfg(test)]
 mod tests {
-    use super::{PreviewRuntime, RuntimeAdapter};
+    use super::{effective_caps_include_net_admin, HostRuntime, PreviewRuntime, RuntimeAdapter};
 
     #[tokio::test]
     async fn preview_runtime_never_claims_to_manage_vpn() {
@@ -211,5 +216,21 @@ mod tests {
         assert!(status.available);
         assert!(!status.can_manage_vpn);
         assert_eq!(status.engine, "none");
+    }
+
+    #[test]
+    fn recognizes_cap_net_admin_bit_from_proc_status() {
+        assert!(effective_caps_include_net_admin("Name:\ttest\nCapEff:\t0000000000001000\n"));
+        assert!(!effective_caps_include_net_admin("CapEff:\t0000000000000800\n"));
+        assert!(!effective_caps_include_net_admin("CapEff:\tnot-hex\n"));
+        assert!(!effective_caps_include_net_admin("Name:\ttest\n"));
+    }
+
+    #[tokio::test]
+    async fn host_preflight_never_claims_to_manage_vpn() {
+        let status = HostRuntime.status().await;
+        assert_eq!(status.mode, "host");
+        assert_eq!(status.engine, "linux-host");
+        assert!(!status.can_manage_vpn);
     }
 }
