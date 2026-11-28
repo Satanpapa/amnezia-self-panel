@@ -108,6 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/containers/{container_id}/peer-stats", get(interfaces::peer_stats))
         .route("/api/clients", get(clients::list))
         .route("/api/clients/{client_id}/disable", axum::routing::post(clients::disable))
+        .route("/api/clients/{client_id}/subscription-token", axum::routing::post(clients::rotate_subscription_token))
         .route("/api/clients/{client_id}/config", get(configs::client_config))
         .route("/api/subscriptions/config", get(configs::subscription_config))
         .with_state(state)
