@@ -1080,7 +1080,7 @@ mod tests {
         let contents = fs::read_to_string(&path).unwrap();
         assert_eq!(
             contents,
-            format!("{}\\n", base64::engine::general_purpose::STANDARD.encode(secret))
+            format!("{}\n", base64::engine::general_purpose::STANDARD.encode(secret))
         );
 
         #[cfg(unix)]
