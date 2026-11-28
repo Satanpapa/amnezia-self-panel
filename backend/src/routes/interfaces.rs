@@ -1,10 +1,12 @@
 use axum::{extract::{Path, State}, http::StatusCode, Json};
 use axum_extra::extract::cookie::CookieJar;
 use serde::Serialize;
+use std::collections::HashMap;
+use chrono::{DateTime, Utc};
 
 use crate::{
     routes::configs::build_server_config,
-    runtime::{interface_name_for_profile, RuntimeStatus},
+    runtime::{interface_name_for_profile, PeerRuntimeStat, RuntimeStatus},
     state::AppState,
 };
 
@@ -266,4 +268,119 @@ mod tests {
         ).execute(&pool).await.unwrap();
         assert_eq!(release.rows_affected(), 1);
     }
+}
+
+
+#[derive(Serialize)]
+pub struct PeerStatsItem {
+    client_id: String,
+    name: String,
+    assigned_ip: String,
+    enabled: bool,
+    expired: bool,
+    active_on_server: bool,
+    latest_handshake_unix: Option<u64>,
+    rx_bytes: Option<u64>,
+    tx_bytes: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub struct PeerStatsResponse {
+    container_id: String,
+    interface_name: String,
+    peer_count: usize,
+    unmatched_peer_count: usize,
+    items: Vec<PeerStatsItem>,
+}
+
+fn client_is_expired(expires_at: Option<&str>) -> Result<bool, StatusCode> {
+    let Some(value) = expires_at else { return Ok(false) };
+    let expiry = DateTime::parse_from_rfc3339(value)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(expiry.with_timezone(&Utc) <= Utc::now())
+}
+
+/// Read live peer handshake and traffic counters without exposing endpoint or preshared-key data.
+pub async fn peer_stats(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(container_id): Path<String>,
+) -> Result<Json<PeerStatsResponse>, (StatusCode, &'static str)> {
+    authenticated_admin(&state, &jar).await
+        .map_err(|status| (status, "Authentication required"))?;
+
+    let row = sqlx::query(
+        "SELECT protocol, status, runtime_operation FROM protocol_containers WHERE id = ?"
+    ).bind(&container_id).fetch_optional(&state.pool).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?
+        .ok_or((StatusCode::NOT_FOUND, "VPN profile not found"))?;
+    let protocol: String = sqlx::Row::try_get(&row, "protocol")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid protocol profile"))?;
+    let status: String = sqlx::Row::try_get(&row, "status")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid protocol status"))?;
+    let operation: Option<String> = sqlx::Row::try_get(&row, "runtime_operation")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid runtime operation state"))?;
+    if status != "running" || operation.is_some() {
+        return Err((StatusCode::CONFLICT, "VPN interface must be running and idle to read live peer statistics"));
+    }
+    if protocol != "wireguard" && protocol != "amnezia-awg" {
+        return Err((StatusCode::BAD_REQUEST, "Peer statistics are available only for WireGuard and AmneziaWG"));
+    }
+    let runtime_status = state.runtime.status().await;
+    if runtime_status.mode != "host" {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "Live peer statistics require RUNTIME_MODE=host"));
+    }
+    let interface_name = interface_name_for_profile(&protocol, &container_id)
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not derive interface name"))?;
+    let stats = state.runtime.peer_stats(&protocol, &interface_name).await
+        .map_err(|message| (StatusCode::BAD_GATEWAY, message))?;
+    let by_key: HashMap<String, PeerRuntimeStat> = stats.into_iter()
+        .map(|item| (item.public_key.clone(), item))
+        .collect();
+
+    let rows = sqlx::query(
+        "SELECT id, name, assigned_ip, enabled, expires_at, wireguard_public_key FROM clients WHERE container_id = ? ORDER BY created_at ASC"
+    ).bind(&container_id).fetch_all(&state.pool).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read VPN clients"))?;
+    let mut items = Vec::with_capacity(rows.len());
+    let mut tracked_count = 0usize;
+    for row in rows {
+        let id: String = sqlx::Row::try_get(&row, "id")
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid client id"))?;
+        let name: String = sqlx::Row::try_get(&row, "name")
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid client name"))?;
+        let assigned_ip: String = sqlx::Row::try_get(&row, "assigned_ip")
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid client IP"))?;
+        let enabled: bool = sqlx::Row::try_get(&row, "enabled")
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid client enabled state"))?;
+        let expires_at: Option<String> = sqlx::Row::try_get(&row, "expires_at")
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid client expiry"))?;
+        let expired = client_is_expired(expires_at.as_deref())
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "A client has an invalid expiry timestamp"))?;
+        let public_key: Option<String> = sqlx::Row::try_get(&row, "wireguard_public_key")
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid client public key"))?;
+        let live = public_key.as_ref().and_then(|key| by_key.get(key));
+        if live.is_some() {
+            tracked_count += 1;
+        }
+        items.push(PeerStatsItem {
+            client_id: id,
+            name,
+            assigned_ip,
+            enabled,
+            expired,
+            active_on_server: live.is_some(),
+            latest_handshake_unix: live.and_then(|peer| peer.latest_handshake_unix),
+            rx_bytes: live.map(|peer| peer.rx_bytes),
+            tx_bytes: live.map(|peer| peer.tx_bytes),
+        });
+    }
+
+    Ok(Json(PeerStatsResponse {
+        container_id,
+        interface_name,
+        peer_count: tracked_count,
+        unmatched_peer_count: by_key.len().saturating_sub(tracked_count),
+        items,
+    }))
 }
