@@ -20,6 +20,13 @@ pub fn generate_keypair() -> (Zeroizing<[u8; 32]>, String) {
     )
 }
 
+/// Derive the public key corresponding to a stored WireGuard-compatible private key.
+pub fn public_key_from_private(private_key: &[u8; 32]) -> String {
+    let secret = StaticSecret::from(*private_key);
+    let public = PublicKey::from(&secret);
+    STANDARD.encode(public.as_bytes())
+}
+
 /// Encrypt a private key with an installation master key.
 /// Stored format: version tag || 12-byte random nonce || authenticated ciphertext.
 pub fn encrypt_private_key(master_key: &[u8; 32], private_key: &[u8; 32]) -> Result<Vec<u8>, &'static str> {
@@ -158,6 +165,7 @@ mod tests {
         let public_bytes: [u8; 32] = STANDARD.decode(public).unwrap().try_into().unwrap();
         let derived = PublicKey::from(&StaticSecret::from(private_bytes));
         assert_eq!(derived.as_bytes(), &public_bytes);
+        assert_eq!(public_key_from_private(&private_bytes), public);
     }
 
     #[test]
