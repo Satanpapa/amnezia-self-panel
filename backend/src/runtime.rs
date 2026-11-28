@@ -16,6 +16,15 @@ use tokio::process::Command;
 use zeroize::Zeroizing;
 
 #[derive(Debug, Clone, Serialize)]
+pub struct PeerRuntimeStat {
+    pub public_key: String,
+    pub allowed_ips: String,
+    pub latest_handshake_unix: Option<u64>,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct RuntimeStatus {
     pub mode: &'static str,
     pub available: bool,
@@ -46,6 +55,14 @@ pub trait RuntimeAdapter: Send + Sync {
         _interface_name: &str,
     ) -> Result<(), &'static str> {
         Err("This runtime does not support VPN interface management")
+    }
+
+    async fn peer_stats(
+        &self,
+        _protocol: &str,
+        _interface_name: &str,
+    ) -> Result<Vec<PeerRuntimeStat>, &'static str> {
+        Err("This runtime does not expose live peer statistics")
     }
 }
 
@@ -255,6 +272,50 @@ impl HostRuntime {
         }
     }
 
+    async fn run_peer_dump(
+        &self,
+        protocol: &str,
+        interface_name: &str,
+    ) -> Result<Vec<PeerRuntimeStat>, &'static str> {
+        if interface_name.is_empty() || interface_name.len() > 15
+            || !interface_name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        {
+            return Err("Invalid generated VPN interface name");
+        }
+        let binary = match protocol {
+            "wireguard" => "wg",
+            "amnezia-awg" => "awg",
+            _ => return Err("Peer statistics support only WireGuard and AmneziaWG"),
+        };
+        if !Self::tools_ready(protocol) {
+            return Err("Required Linux VPN tools, kernel support and CAP_NET_ADMIN are missing");
+        }
+        let binary_path = trusted_system_executable(binary)
+            .ok_or("VPN control binary is missing or not root-owned and protected")?;
+        let mut command = Command::new(binary_path);
+        command
+            .env_clear()
+            .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+            .env("LANG", "C")
+            .args(["show", interface_name, "dump"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let output = match tokio::time::timeout(Duration::from_secs(10), command.output()).await {
+            Ok(Ok(output)) if output.status.success() => output,
+            Ok(Ok(_)) => return Err("Could not read live VPN peer statistics"),
+            Ok(Err(_)) => return Err("Could not execute VPN peer statistics command"),
+            Err(_) => return Err("VPN peer statistics command timed out"),
+        };
+        if output.stdout.len() > 1024 * 1024 {
+            return Err("VPN peer statistics output exceeded the safety limit");
+        }
+        let dump = std::str::from_utf8(&output.stdout)
+            .map_err(|_| "VPN peer statistics output is not valid UTF-8")?;
+        parse_peer_dump(dump)
+    }
+
     async fn run_quick(
         &self,
         binary: &'static str,
@@ -281,6 +342,46 @@ impl HostRuntime {
             Err(_) => Err("VPN quick command timed out and was terminated"),
         }
     }
+}
+
+
+/// Parse the stable wg/awg "show <interface> dump" tab-separated format.
+/// The interface's private/preshared keys and peer endpoint are intentionally discarded.
+fn parse_peer_dump(dump: &str) -> Result<Vec<PeerRuntimeStat>, &'static str> {
+    let mut lines = dump.lines();
+    let interface_line = lines.next().ok_or("VPN peer dump is empty")?;
+    if interface_line.split('\\t').count() != 4 {
+        return Err("VPN peer dump has an invalid interface header");
+    }
+
+    let mut peers = Vec::new();
+    for line in lines {
+        let fields: Vec<&str> = line.split('\\t').collect();
+        if fields.len() != 8 {
+            return Err("VPN peer dump contains a malformed peer row");
+        }
+        if base64::engine::general_purpose::STANDARD
+            .decode(fields[0])
+            .map_or(true, |key| key.len() != 32)
+        {
+            return Err("VPN peer dump contains an invalid public key");
+        }
+        let allowed_ips = fields[3];
+        let latest_handshake = fields[4].parse::<u64>()
+            .map_err(|_| "VPN peer dump contains an invalid handshake timestamp")?;
+        let rx_bytes = fields[5].parse::<u64>()
+            .map_err(|_| "VPN peer dump contains an invalid receive counter")?;
+        let tx_bytes = fields[6].parse::<u64>()
+            .map_err(|_| "VPN peer dump contains an invalid transmit counter")?;
+        peers.push(PeerRuntimeStat {
+            public_key: fields[0].to_string(),
+            allowed_ips: allowed_ips.to_string(),
+            latest_handshake_unix: (latest_handshake != 0).then_some(latest_handshake),
+            rx_bytes,
+            tx_bytes,
+        });
+    }
+    Ok(peers)
 }
 
 fn trusted_executable_in_system_path(name: &str) -> bool {
@@ -573,7 +674,15 @@ impl RuntimeAdapter for HostRuntime {
             .map_err(|_| "Interface is stopped or absent, but protected config cleanup failed")?;
         Ok(())
     }
-}
+
+
+    async fn peer_stats(
+        &self,
+        protocol: &str,
+        interface_name: &str,
+    ) -> Result<Vec<PeerRuntimeStat>, &'static str> {
+        self.run_peer_dump(protocol, interface_name).await
+    }}
 
 pub fn interface_name_for_profile(protocol: &str, profile_id: &str) -> Result<String, &'static str> {
     let prefix = match protocol {
@@ -708,6 +817,29 @@ mod tests {
         };
         assert!(runtime.config_path("wgabcdef1234").is_err());
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn parses_peer_dump_without_exposing_secret_columns() {
+        let public = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
+        let dump = format!(
+            "private-public-key\\tserver-public-key\\t51820\\t0\\n{public}\\tnone\\t198.51.100.10:12345\\t10.66.0.2/32\\t1700000000\\t1024\\t2048\\t25\\n"
+        );
+        let stats = super::parse_peer_dump(&dump).unwrap();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].public_key, public);
+        assert_eq!(stats[0].latest_handshake_unix, Some(1_700_000_000));
+        assert_eq!(stats[0].rx_bytes, 1024);
+        assert_eq!(stats[0].tx_bytes, 2048);
+        assert_eq!(stats[0].allowed_ips, "10.66.0.2/32");
+        assert!(!format!("{:?}", stats[0]).contains("198.51.100.10"));
+        assert!(!format!("{:?}", stats[0]).contains("private-public-key"));
+    }
+
+    #[test]
+    fn rejects_malformed_peer_dump_rows() {
+        assert!(super::parse_peer_dump("").is_err());
+        assert!(super::parse_peer_dump("header\\tpublic\\tport\\tfwmark\\nshort\\trow\\n").is_err());
     }
 
     #[test]
