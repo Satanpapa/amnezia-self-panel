@@ -112,7 +112,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/clients/{client_id}/preshared-key", axum::routing::post(clients::provision_client_preshared_key))
         .route("/api/clients/{client_id}/preshared-key/rotate", axum::routing::post(clients::rotate_client_preshared_key))
         .route("/api/clients/{client_id}/config", get(configs::client_config))
+        .route("/api/clients/{client_id}/vpn-uri", get(configs::client_vpn_uri))
         .route("/api/subscriptions/config", get(configs::subscription_config))
+        .route("/api/subscriptions/vpn-uri", get(configs::subscription_vpn_uri))
         .with_state(state)
         .layer(RequestBodyLimitLayer::new(16 * 1024))
         .layer(CorsLayer::new().allow_origin([
