@@ -5,7 +5,7 @@ Self-hosted control plane for AmneziaWG, WireGuard, OpenVPN and OpenVPN over Clo
 **Current stack**
 - Backend: Rust, Tokio, Axum, SQLx, SQLite, Argon2id.
 - Frontend: React, TypeScript, Vite.
-- Deployment target: Linux VPS; read-only Docker daemon probe is implemented, container lifecycle is not.
+- Deployment target: Linux VPS. Opt-in host WireGuard / AmneziaWG interface start/stop is implemented; Docker daemon probe remains read-only.
 
 ## Current progress
 
@@ -34,12 +34,14 @@ Self-hosted control plane for AmneziaWG, WireGuard, OpenVPN and OpenVPN over Clo
 - [x] Edit saved AWG profiles through a revision-checked API; every accepted edit increments the profile revision and creates an audit event.
 - [x] Protocol Studio UI with AWG profile editor, server overview, searchable/filterable client list and responsive navigation.
 - [x] Unit tests for subnet overlap and adjacency.
-- [x] RuntimeAdapter boundary and safe PreviewRuntime implementation.
-- [x] Read-only Linux host preflight for `CAP_NET_ADMIN`, TUN, kernel modules, `ip`, `wg` / `awg` and userspace daemons.
-- [x] Docker Engine connectivity adapter (read-only health probe).
+- [x] RuntimeAdapter boundary, safe PreviewRuntime, read-only Docker health probe.
+- [x] Linux host prerequisite checks for root, `CAP_NET_ADMIN`, TUN/kernel modules and root-owned `ip`, `wg`, `awg`, `wg-quick`, `awg-quick` / userspace daemons.
+- [x] Opt-in Linux host interface start/stop through fixed `wg-quick` / `awg-quick` argv (no shell), protected `0700` config directory and `0600` files.
+- [x] Authenticated server start/stop API and dashboard controls, with DB state transitions and audit events.
 - [x] Authenticated one-time `POST /api/containers/:id/awg-header-protection-key` endpoint and dashboard status/button.
 - [ ] Docker container create/start/stop/remove lifecycle.
-- [ ] VPN protocol/peer lifecycle and configuration export.
+- [x] Initial server interface start/stop and initial active-peer installation from generated configuration.
+- [ ] Live peer add/revoke/expiry synchronization and profile reload without full interface restart.
 - [ ] Traffic accounting, quotas and subscription URLs.
 
 ## Run locally
@@ -54,7 +56,7 @@ cp .env.example .env
 cargo run
 ```
 
-The API binds to `127.0.0.1:4000` by default and creates `data/amnezia-panel.db`. `RUNTIME_MODE=preview` is the safe default. Set `RUNTIME_MODE=host` for the Linux host runtime (CAP_NET_ADMIN, `ip`, `wg-quick` / `awg-quick`, protocol tools, kernel module or TUN/userspace implementation). Host mutations remain disabled unless `HOST_RUNTIME_ALLOW_MUTATIONS=true` is explicitly set. Set `RUNTIME_MODE=docker` to enable a read-only Docker daemon health check. With mutations disabled, host mode performs only a prerequisite check. With the explicit opt-in enabled, the backend uses fixed `wg-quick up/down` or `awg-quick up/down` commands, no shell, and a private config directory (`0700` directory, `0600` files). Generated config files contain server private keys in plaintext while an interface is active.
+The API binds to `127.0.0.1:4000` by default and creates `data/amnezia-panel.db`. `RUNTIME_MODE=preview` is the safe default. Set `RUNTIME_MODE=host` for the Linux host runtime. It requires effective UID 0, `CAP_NET_ADMIN`, `ip`, `wg` / `awg`, `wg-quick` / `awg-quick`, and the appropriate kernel module or userspace TUN implementation. Host mutations remain disabled unless `HOST_RUNTIME_ALLOW_MUTATIONS=true` is explicitly set. Set `RUNTIME_MODE=docker` to enable a read-only Docker daemon health check. With mutations disabled, host mode performs only a prerequisite check. With the explicit opt-in enabled, the backend uses fixed `wg-quick up/down` or `awg-quick up/down` binaries resolved only from root-owned, non-writable system directories; no shell is invoked and child PATH/environment are sanitized. Generated server config files contain the server private key in plaintext in the private config directory (`0700` directory, `0600` files) while an interface is active. Run the panel only on a trusted host and keep its admin UI private.
 
 ### Frontend
 
@@ -82,6 +84,8 @@ Open the Vite URL (normally http://127.0.0.1:5173). The dev server proxies `/api
 - `POST /api/containers/:container_id/wireguard-server-key` (one-time encrypted server-key provisioning)
 - `POST /api/containers/:container_id/awg-header-protection-key` (one-time encrypted AWG 3.1 header-protection key provisioning; requires S1-S4 >= 12)
 - `POST /api/containers/:container_id/clients`
+- `POST /api/containers/:container_id/start` (host runtime only; builds config and starts the WG/AWG interface)
+- `POST /api/containers/:container_id/stop` (host runtime only; stops a managed WG/AWG interface)
 - `GET /api/containers/:container_id/server-config` (authenticated server `.conf` draft; includes active, unexpired peers)
 - `GET /api/clients/:client_id/config` (authenticated `.conf` draft; denied for disabled or expired clients)
 
@@ -99,12 +103,12 @@ The initial admin password must be 12-256 characters. Usernames are 3-32 ASCII l
 - Set `COOKIE_SECURE=true` when serving over HTTPS.
 - Use HTTPS in production; do not expose the development server directly to the Internet.
 - The initial version does not yet include login rate limiting, full CSRF defenses, password reset or multi-user roles.
-- Container records and runtime remain preview-only. WireGuard/AmneziaWG server and client keypairs are generated and private keys are encrypted at rest, but peers are not installed into a running VPN interface. Authenticated `.conf` downloads now render draft server/client profiles, but these files do not activate peers, create a service, configure NAT/forwarding or prove a working tunnel.
-- Curve25519 keypair generation and authenticated encryption at rest are implemented. AWG 3.1 HeaderProtectionKey is stored separately and encrypted at rest. The authenticated decryption primitive is implemented with zeroizing plaintext buffers, but no client-facing private-key export/config endpoint exists yet. Actual peer installation/revocation, `vpn://` serialization and Docker execution are not implemented yet. Client `.conf` uses a full-tunnel IPv4 route (`0.0.0.0/0`) only; IPv6 routing, firewall policy and NAT must be implemented before use as a production full-tunnel service.
+- Preview remains the safe default. In opt-in Linux host mode, authenticated start/stop operations can create/remove a real WireGuard/AmneziaWG interface through the official quick tools. The server configuration is generated from currently enabled and unexpired clients at start time. Adding, revoking or expiring a client while the interface is running does not yet update the live peer set; stop and start the interface to apply those changes. Authenticated `.conf` downloads still carry a draft marker and do not configure NAT/forwarding, firewall policy, IPv6 routing or automatic startup/recovery.
+- Curve25519 keypair generation and authenticated encryption at rest are implemented. AWG 3.1 HeaderProtectionKey is stored separately and encrypted at rest. The authenticated decryption primitive is implemented with zeroizing plaintext buffers, but no client-facing private-key export/config endpoint exists yet. Dynamic peer installation/revocation, live profile reload, `vpn://` serialization and Docker container lifecycle are not implemented yet. Client `.conf` uses a full-tunnel IPv4 route (`0.0.0.0/0`) only; IPv6 routing, firewall policy and NAT must be implemented before use as a production full-tunnel service.
 
 ## Runtime architecture
 
-The HTTP layer depends on a `RuntimeAdapter` trait rather than directly invoking Docker or shell commands. `PreviewRuntime` reports metadata-only mode. `HostRuntime` checks the official `awg` / `wg`, `awg-quick` / `wg-quick` tools, kernel modules or userspace TUN daemons, `/dev/net/tun`, and `CAP_NET_ADMIN`. It can manage an interface only when `HOST_RUNTIME_ALLOW_MUTATIONS=true` is set. `DockerRuntime` uses Bollard to ping the local Docker daemon with a three-second timeout. Both report `can_manage_vpn=false`: the panel does not yet create, start, stop, or remove VPN containers. Docker socket access is highly privileged; do not expose the API publicly or mount the socket into an untrusted container.
+The HTTP layer depends on a `RuntimeAdapter` trait rather than directly invoking Docker or shell commands. `PreviewRuntime` reports metadata-only mode. `HostRuntime` checks the official `awg` / `wg`, `awg-quick` / `wg-quick` tools, kernel modules or userspace TUN daemons, `/dev/net/tun`, and `CAP_NET_ADMIN`. It can manage an interface only when `HOST_RUNTIME_ALLOW_MUTATIONS=true` is set. `DockerRuntime` uses Bollard to ping the local Docker daemon with a three-second timeout. `HostRuntime` reports `can_manage_vpn=true` only when its Linux dependencies are present and `HOST_RUNTIME_ALLOW_MUTATIONS=true`; it requires effective root plus `CAP_NET_ADMIN`. Docker remains ping-only and reports `can_manage_vpn=false`. Docker socket access is highly privileged; do not expose the API publicly or mount the socket into an untrusted container.
 
 ## Project docs
 
