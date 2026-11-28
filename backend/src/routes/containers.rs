@@ -200,7 +200,7 @@ pub struct CreateContainerResponse {
 }
 
 fn validate_cps_signature(signature: &str) -> Result<(), &'static str> {
-    if signature.is_empty() || signature.len() > 1024 || signature.contains(['\\r', '\\n']) {
+    if signature.is_empty() || signature.len() > 1024 || signature.contains('\r') || signature.contains('\n') {
         return Err("I1-I5 signatures must be 1-1024 characters without line breaks");
     }
     let mut remaining = signature;
