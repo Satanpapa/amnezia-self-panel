@@ -918,6 +918,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn peer_preshared_key_rotation_requires_existing_key_and_stopped_unexpired_client() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE protocol_containers (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                runtime_operation TEXT
+            )"
+        ).execute(&pool).await.unwrap();
+        sqlx::query(
+            "CREATE TABLE clients (
+                id TEXT PRIMARY KEY,
+                container_id TEXT NOT NULL,
+                enabled BOOLEAN NOT NULL,
+                expires_at TEXT,
+                wireguard_preshared_key_encrypted BLOB
+            )"
+        ).execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO protocol_containers (id, status, runtime_operation) VALUES
+                ('stopped', 'stopped', NULL),
+                ('running', 'running', NULL),
+                ('busy', 'stopped', 'sync')"
+        ).execute(&pool).await.unwrap();
+
+        let now = chrono::Utc::now();
+        let future = (now + chrono::Duration::days(1)).to_rfc3339();
+        let past = (now - chrono::Duration::minutes(1)).to_rfc3339();
+        sqlx::query(
+            "INSERT INTO clients (id, container_id, enabled, expires_at, wireguard_preshared_key_encrypted) VALUES
+                ('valid', 'stopped', 1, ?, X'50534B31'),
+                ('expired', 'stopped', 1, ?, X'50534B31'),
+                ('disabled', 'stopped', 0, ?, X'50534B31'),
+                ('running-profile', 'running', 1, ?, X'50534B31'),
+                ('busy-profile', 'busy', 1, ?, X'50534B31'),
+                ('missing-key', 'stopped', 1, ?, NULL)"
+        )
+        .bind(&future).bind(&past).bind(&future).bind(&future).bind(&future).bind(&future)
+        .execute(&pool).await.unwrap();
+
+        let now_text = chrono::Utc::now().to_rfc3339();
+        let replacement = vec![0x50_u8, 0x53, 0x4b, 0x31, 0x02];
+        let try_rotate = |client_id: &'static str, container_id: &'static str, expiry: Option<String>| {
+            let pool = pool.clone();
+            let replacement = replacement.clone();
+            let now_text = now_text.clone();
+            async move {
+                sqlx::query(
+                    "UPDATE clients SET wireguard_preshared_key_encrypted = ?
+                     WHERE id = ? AND enabled = 1
+                       AND wireguard_preshared_key_encrypted IS NOT NULL
+                       AND expires_at IS ?
+                       AND (expires_at IS NULL OR julianday(expires_at) > julianday(?))
+                       AND EXISTS (
+                         SELECT 1 FROM protocol_containers
+                         WHERE id = ? AND status IN ('preview', 'stopped')
+                           AND runtime_operation IS NULL
+                       )"
+                )
+                .bind(replacement).bind(client_id).bind(&expiry).bind(&now_text).bind(container_id)
+                .execute(&pool).await.unwrap().rows_affected()
+            }
+        };
+
+        assert_eq!(try_rotate("valid", "stopped", Some(future.clone())).await, 1);
+        assert_eq!(try_rotate("expired", "stopped", Some(past)).await, 0);
+        assert_eq!(try_rotate("disabled", "stopped", Some(future.clone())).await, 0);
+        assert_eq!(try_rotate("running-profile", "running", Some(future.clone())).await, 0);
+        assert_eq!(try_rotate("busy-profile", "busy", Some(future.clone())).await, 0);
+        assert_eq!(try_rotate("missing-key", "stopped", Some(future)).await, 0);
+
+        let replaced: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM clients WHERE wireguard_preshared_key_encrypted = X'50534B3102'"
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(replaced, 1);
+    }
+
+    #[tokio::test]
     async fn database_guard_rejects_duplicate_client_ip_for_same_container() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
