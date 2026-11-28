@@ -73,6 +73,15 @@ pub trait RuntimeAdapter: Send + Sync {
     ) -> Result<bool, &'static str> {
         Err("This runtime cannot inspect Linux interfaces")
     }
+
+    async fn remove_peer(
+        &self,
+        _protocol: &str,
+        _interface_name: &str,
+        _public_key: &str,
+    ) -> Result<(), &'static str> {
+        Err("This runtime does not support live peer removal")
+    }
 }
 
 /// Mark interrupted runtime operations as requiring administrator cleanup.
@@ -347,6 +356,55 @@ impl HostRuntime {
         let dump = std::str::from_utf8(&output)
             .map_err(|_| "VPN peer statistics output is not valid UTF-8")?;
         parse_peer_dump(dump)
+    }
+
+    async fn remove_peer_from_interface(
+        &self,
+        protocol: &str,
+        interface_name: &str,
+        public_key: &str,
+    ) -> Result<(), &'static str> {
+        if interface_name.is_empty() || interface_name.len() > 15
+            || !interface_name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        {
+            return Err("Invalid generated VPN interface name");
+        }
+        if base64::engine::general_purpose::STANDARD
+            .decode(public_key)
+            .map_or(true, |key| key.len() != 32)
+        {
+            return Err("Invalid WireGuard peer public key");
+        }
+        let binary = match protocol {
+            "wireguard" => "wg",
+            "amnezia-awg" => "awg",
+            _ => return Err("Live peer removal supports only WireGuard and AmneziaWG"),
+        };
+        if !Self::tools_ready(protocol) {
+            return Err("Required Linux VPN tools, kernel support and CAP_NET_ADMIN are missing");
+        }
+        if !self.interface_exists(interface_name).await? {
+            // The interface is already absent, so there is no live peer to retain.
+            return Ok(());
+        }
+        let binary_path = trusted_system_executable(binary)
+            .ok_or("VPN control binary is missing or not root-owned and protected")?;
+        let mut command = Command::new(binary_path);
+        command
+            .env_clear()
+            .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+            .env("LANG", "C")
+            .args(["set", interface_name, "peer", public_key, "remove"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        match tokio::time::timeout(Duration::from_secs(10), command.status()).await {
+            Ok(Ok(status)) if status.success() => Ok(()),
+            Ok(Ok(_)) => Err("Could not revoke the expired VPN peer; inspect host service logs"),
+            Ok(Err(_)) => Err("Could not execute VPN peer removal command"),
+            Err(_) => Err("VPN peer removal command timed out"),
+        }
     }
 
     async fn run_quick(
@@ -728,6 +786,15 @@ impl RuntimeAdapter for HostRuntime {
     ) -> Result<bool, &'static str> {
         Self::quick_binary(protocol)?;
         self.interface_exists(interface_name).await
+    }
+
+    async fn remove_peer(
+        &self,
+        protocol: &str,
+        interface_name: &str,
+        public_key: &str,
+    ) -> Result<(), &'static str> {
+        self.remove_peer_from_interface(protocol, interface_name, public_key).await
     }
 }
 
