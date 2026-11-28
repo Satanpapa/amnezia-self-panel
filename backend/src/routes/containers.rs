@@ -451,7 +451,7 @@ pub async fn update_awg_profile(
             .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
     }
     let result = sqlx::query(
-        "UPDATE protocol_containers SET awg_settings_json = ?, revision = revision + 1 WHERE id = ? AND protocol = 'amnezia-awg' AND revision = ?"
+        "UPDATE protocol_containers SET awg_settings_json = ?, revision = revision + 1 WHERE id = ? AND protocol = 'amnezia-awg' AND revision = ? AND status IN ('preview', 'stopped') AND runtime_operation IS NULL"
     )
     .bind(settings_json)
     .bind(&container_id)
@@ -521,7 +521,7 @@ pub async fn provision_wireguard_server_key(
     let mut tx = state.pool.begin().await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not begin key provisioning"))?;
     let result = sqlx::query(
-        "UPDATE protocol_containers SET wireguard_server_public_key = ?, wireguard_server_private_key_encrypted = ?, revision = revision + 1 WHERE id = ? AND wireguard_server_public_key IS NULL"
+        "UPDATE protocol_containers SET wireguard_server_public_key = ?, wireguard_server_private_key_encrypted = ?, revision = revision + 1 WHERE id = ? AND wireguard_server_public_key IS NULL AND status IN ('preview', 'stopped') AND runtime_operation IS NULL"
     ).bind(&public_key).bind(&encrypted).bind(&container_id)
         .execute(&mut *tx).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not save server keys"))?;
@@ -580,7 +580,7 @@ pub async fn provision_awg_header_protection_key(
     let encrypted = crate::security::wireguard_keys::encrypt_header_protection_key(master_key, &secret)
         .map_err(|message| (StatusCode::INTERNAL_SERVER_ERROR, message))?;
     let result = sqlx::query(
-        "UPDATE protocol_containers SET awg_header_protection_key_encrypted = ?, revision = revision + 1 WHERE id = ? AND protocol = 'amnezia-awg' AND awg_header_protection_key_encrypted IS NULL"
+        "UPDATE protocol_containers SET awg_header_protection_key_encrypted = ?, revision = revision + 1 WHERE id = ? AND protocol = 'amnezia-awg' AND awg_header_protection_key_encrypted IS NULL AND status IN ('preview', 'stopped') AND runtime_operation IS NULL"
     ).bind(&encrypted).bind(&container_id)
         .execute(&mut *tx).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not save HeaderProtectionKey"))?;
