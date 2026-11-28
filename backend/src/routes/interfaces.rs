@@ -22,7 +22,7 @@ pub struct InterfaceOperationResponse {
 
 async fn audit(
     state: &AppState,
-    admin_id: &str,
+    admin_id: &i64,
     action: &'static str,
     details: serde_json::Value,
 ) -> Result<(), (StatusCode, &'static str)> {
