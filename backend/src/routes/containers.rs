@@ -141,6 +141,20 @@ impl AwgSettings {
         }
         Ok(())
     }
+
+    fn validate_header_protection(&self) -> Result<(), &'static str> {
+        if self.version != "3.1" {
+            return Err("HeaderProtectionKey requires AmneziaWG 3.1");
+        }
+        for (name, value) in [
+            ("S1", self.s1), ("S2", self.s2), ("S3", self.s3), ("S4", self.s4),
+        ] {
+            if value.unwrap_or(0) < 12 {
+                return Err("HeaderProtectionKey requires S1, S2, S3 and S4 to be at least 12");
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -159,6 +173,7 @@ pub struct ContainerRecord {
     pub created_at: String,
     pub awg_settings_json: String,
     pub wireguard_server_public_key: Option<String>,
+    pub awg_header_protection_key_configured: bool,
 }
 
 #[derive(Deserialize)]
@@ -212,7 +227,7 @@ pub async fn list(
 ) -> Result<Json<ContainerList>, StatusCode> {
     authenticated_admin(&state, &jar).await?;
     let items = sqlx::query_as::<_, ContainerRecord>(
-        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key FROM protocol_containers ORDER BY created_at DESC"
+        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key, (awg_header_protection_key_encrypted IS NOT NULL) AS awg_header_protection_key_configured FROM protocol_containers ORDER BY created_at DESC"
     )
     .fetch_all(&state.pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(ContainerList { items }))
@@ -334,6 +349,15 @@ pub async fn update_awg_profile(
 
     let mut tx = state.pool.begin().await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not begin profile update"))?;
+    let has_header_protection_key = sqlx::query_scalar::<_, bool>(
+        "SELECT awg_header_protection_key_encrypted IS NOT NULL FROM protocol_containers WHERE id = ? AND protocol = 'amnezia-awg'"
+    ).bind(&container_id).fetch_optional(&mut *tx).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read AWG profile state"))?
+        .ok_or((StatusCode::NOT_FOUND, "AmneziaWG profile not found"))?;
+    if has_header_protection_key {
+        input.settings.validate_header_protection()
+            .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+    }
     let result = sqlx::query(
         "UPDATE protocol_containers SET awg_settings_json = ?, revision = revision + 1 WHERE id = ? AND protocol = 'amnezia-awg' AND revision = ?"
     )
@@ -420,6 +444,70 @@ pub async fn provision_wireguard_server_key(
         "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key FROM protocol_containers WHERE id = ?"
     ).bind(&container_id).fetch_one(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read provisioned profile"))?;
+    Ok(Json(item))
+}
+
+
+/// Generate a one-time AWG 3.1 HeaderProtectionKey and store it encrypted.
+/// The secret itself is never included in API responses or audit records.
+pub async fn provision_awg_header_protection_key(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    axum::extract::Path(container_id): axum::extract::Path<String>,
+) -> Result<Json<ContainerRecord>, (StatusCode, &'static str)> {
+    let (admin_id, _) = authenticated_admin(&state, &jar).await
+        .map_err(|status| (status, "Authentication required"))?;
+    let master_key = state.wireguard_master_key.as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Set WIREGUARD_MASTER_KEY before provisioning AWG header protection"))?;
+
+    let mut tx = state.pool.begin().await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not begin header protection provisioning"))?;
+    let profile = sqlx::query_as::<_, (String, bool)>(
+        "SELECT awg_settings_json, awg_header_protection_key_encrypted IS NOT NULL FROM protocol_containers WHERE id = ? AND protocol = 'amnezia-awg'"
+    ).bind(&container_id).fetch_optional(&mut *tx).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read AWG profile"))?
+        .ok_or((StatusCode::NOT_FOUND, "AmneziaWG profile not found"))?;
+    if profile.1 {
+        return Err((StatusCode::CONFLICT, "HeaderProtectionKey is already provisioned; key rotation requires a separate procedure"));
+    }
+    let settings: AwgSettings = serde_json::from_str(&profile.0)
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Stored AWG profile is invalid"))?;
+    settings.validate()
+        .map_err(|_| (StatusCode::CONFLICT, "Save a valid AmneziaWG 3.1 profile before provisioning HeaderProtectionKey"))?;
+    settings.validate_header_protection()
+        .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+
+    let secret = crate::security::wireguard_keys::generate_header_protection_key();
+    let encrypted = crate::security::wireguard_keys::encrypt_header_protection_key(master_key, &secret)
+        .map_err(|message| (StatusCode::INTERNAL_SERVER_ERROR, message))?;
+    let result = sqlx::query(
+        "UPDATE protocol_containers SET awg_header_protection_key_encrypted = ?, revision = revision + 1 WHERE id = ? AND protocol = 'amnezia-awg' AND awg_header_protection_key_encrypted IS NULL"
+    ).bind(&encrypted).bind(&container_id)
+        .execute(&mut *tx).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not save HeaderProtectionKey"))?;
+    if result.rows_affected() == 0 {
+        return Err((StatusCode::CONFLICT, "HeaderProtectionKey was provisioned concurrently"));
+    }
+
+    let revision: i64 = sqlx::query_scalar(
+        "SELECT revision FROM protocol_containers WHERE id = ?"
+    ).bind(&container_id).fetch_one(&mut *tx).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read updated revision"))?;
+    let details = serde_json::json!({
+        "container_id": container_id,
+        "revision": revision,
+        "secret_returned": false
+    }).to_string();
+    sqlx::query("INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'awg.header_protection_key.provisioned', ?)")
+        .bind(admin_id).bind(details).execute(&mut *tx).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not record HeaderProtectionKey provisioning"))?;
+    tx.commit().await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not commit HeaderProtectionKey"))?;
+
+    let item = sqlx::query_as::<_, ContainerRecord>(
+        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key, (awg_header_protection_key_encrypted IS NOT NULL) AS awg_header_protection_key_configured FROM protocol_containers WHERE id = ?"
+    ).bind(&container_id).fetch_one(&state.pool).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read provisioned AWG profile"))?;
     Ok(Json(item))
 }
 
