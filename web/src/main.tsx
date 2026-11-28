@@ -405,7 +405,7 @@ function App() {
           <div className="header-actions"><span className="user-pill">{user}</span><button className="secondary" onClick={() => void refresh()}>↻ Обновить</button><button className="secondary" onClick={logout}>Выйти</button></div>
         </header>
         {error && <div className="form-error global-error">{error}<button onClick={() => setError('')}>Закрыть</button></div>}
-        {issuedToken && <section className="token-notice"><b>Токен доступа создан</b><p>Показывается один раз. Рабочая ссылка подписки появится после подключения VPN runtime.</p><code>{issuedToken}</code><button className="secondary compact" onClick={() => setIssuedToken('')}>Скрыть</button></section>}
+        {issuedToken && <section className="token-notice"><b>Токен доступа создан</b><p>Токен показывается один раз. Получить актуальный client.conf можно через GET /api/subscriptions/config, передав токен заголовком Authorization: Bearer. Токен не помещается в URL и не хранится в открытом виде на сервере.</p><code>{issuedToken}</code><button className="secondary compact" onClick={() => setIssuedToken('')}>Скрыть</button></section>}
 
         {section === 'overview' && <>
           <section className="hero-panel">
