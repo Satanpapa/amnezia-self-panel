@@ -163,8 +163,8 @@ pub async fn create(
     .bind(input.expires_at).bind(&public_key).bind(&encrypted_private_key).execute(&state.pool).await
     .map_err(|error| {
         if let sqlx::Error::Database(db_error) = &error {
-            if db_error.is_unique_violation() {
-                return (StatusCode::CONFLICT, "The selected client IP is already allocated; retry the request");
+            if db_error.is_unique_violation() || db_error.message().contains("duplicate_client_ip") {
+                return (StatusCode::CONFLICT, "The selected client IP is already allocated; refresh and retry");
             }
         }
         tracing::error!("Failed to create client: {error}");
