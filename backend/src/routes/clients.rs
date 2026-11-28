@@ -404,8 +404,8 @@ pub async fn rotate_subscription_token(
     let mut tx = state.pool.begin().await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not begin subscription token rotation"))?;
     let updated = sqlx::query(
-        "UPDATE clients SET subscription_token_hash = ? WHERE id = ? AND enabled = 1 AND expires_at IS ?"
-    ).bind(token_hash).bind(&client_id).bind(&expires_at)
+        "UPDATE clients SET subscription_token_hash = ? WHERE id = ? AND enabled = 1 AND expires_at IS ? AND (expires_at IS NULL OR julianday(expires_at) > julianday(?))"
+    ).bind(token_hash).bind(&client_id).bind(&expires_at).bind(&now)
         .execute(&mut *tx).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not rotate subscription token"))?;
     if updated.rows_affected() != 1 {
@@ -558,6 +558,64 @@ mod tests {
     use ipnet::Ipv4Net;
     use std::{collections::HashSet, net::Ipv4Addr, str::FromStr};
     use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn subscription_token_rotation_invalidates_previous_token_and_rejects_expired_clients() {
+        use crate::security::session::hash_session_token;
+        use chrono::{Duration, Utc};
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE clients (
+                id TEXT PRIMARY KEY,
+                enabled BOOLEAN NOT NULL,
+                expires_at TEXT,
+                subscription_token_hash TEXT NOT NULL UNIQUE
+            )"
+        ).execute(&pool).await.unwrap();
+
+        let old_token = "0123456789abcdef0123456789abcdef";
+        let new_token = "abcdef0123456789abcdef0123456789";
+        let expired_token = "fedcba9876543210fedcba9876543210";
+        let future_expiry = (Utc::now() + Duration::days(1)).to_rfc3339();
+        let past_expiry = (Utc::now() - Duration::minutes(1)).to_rfc3339();
+        sqlx::query(
+            "INSERT INTO clients (id, enabled, expires_at, subscription_token_hash) VALUES
+                ('active', 1, ?, ?), ('expired', 1, ?, ?)"
+        )
+        .bind(&future_expiry).bind(hash_session_token(old_token))
+        .bind(&past_expiry).bind(hash_session_token(expired_token))
+        .execute(&pool).await.unwrap();
+
+        let now = Utc::now().to_rfc3339();
+        let active_update = sqlx::query(
+            "UPDATE clients SET subscription_token_hash = ?
+             WHERE id = 'active' AND enabled = 1 AND expires_at IS ?
+               AND (expires_at IS NULL OR julianday(expires_at) > julianday(?))"
+        ).bind(hash_session_token(new_token)).bind(&Some(future_expiry.clone())).bind(&now)
+            .execute(&pool).await.unwrap();
+        let expired_update = sqlx::query(
+            "UPDATE clients SET subscription_token_hash = ?
+             WHERE id = 'expired' AND enabled = 1 AND expires_at IS ?
+               AND (expires_at IS NULL OR julianday(expires_at) > julianday(?))"
+        ).bind(hash_session_token(new_token)).bind(&Some(past_expiry.clone())).bind(&now)
+            .execute(&pool).await.unwrap();
+
+        assert_eq!(active_update.rows_affected(), 1);
+        assert_eq!(expired_update.rows_affected(), 0);
+        let old_matches: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM clients WHERE subscription_token_hash = ?"
+        ).bind(hash_session_token(old_token)).fetch_one(&pool).await.unwrap();
+        let new_matches: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM clients WHERE subscription_token_hash = ?"
+        ).bind(hash_session_token(new_token)).fetch_one(&pool).await.unwrap();
+        assert_eq!(old_matches, 0);
+        assert_eq!(new_matches, 1);
+    }
 
     #[tokio::test]
     async fn database_guard_rejects_duplicate_client_ip_for_same_container() {
