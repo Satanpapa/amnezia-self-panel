@@ -621,6 +621,25 @@ mod tests {
     }
 
     #[test]
+    fn header_protection_requires_awg31_and_all_four_paddings_at_least_12() {
+        let valid = AwgSettings {
+            version: "3.1".into(),
+            s1: Some(12), s2: Some(12), s3: Some(12), s4: Some(12),
+            ..Default::default()
+        };
+        assert!(valid.validate_header_protection().is_ok());
+
+        for invalid in [
+            AwgSettings { version: "2.0".into(), s1: Some(12), s2: Some(12), s3: Some(12), s4: Some(12), ..Default::default() },
+            AwgSettings { version: "3.1".into(), s1: Some(12), s2: Some(12), s3: Some(12), s4: None, ..Default::default() },
+            AwgSettings { version: "3.1".into(), s1: Some(12), s2: Some(11), s3: Some(12), s4: Some(12), ..Default::default() },
+            AwgSettings { version: "3.1".into(), s1: Some(12), s2: Some(12), s3: Some(0), s4: Some(12), ..Default::default() },
+        ] {
+            assert!(invalid.validate_header_protection().is_err());
+        }
+    }
+
+    #[test]
     fn rejects_malformed_cps_signature_tags() {
         let malformed = AwgSettings {
             version: "1.5".into(), i1: Some("not-a-tag".into()), ..Default::default()
