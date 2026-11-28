@@ -61,6 +61,7 @@ h1{font-size:26px;margin:8px 0 0;letter-spacing:-.045em}
 .container-top>div{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.container-top b{font-size:12px}
 .protocol-tag{padding:4px 7px;background:#17283a;color:#a6bfd8;border-radius:4px;font:9px 'DM Mono',monospace}
 .preview-tag{font:8px 'DM Mono',monospace;color:#e7bc70;border:1px solid #6b522e;padding:4px 7px;border-radius:4px;letter-spacing:.08em}
+.preview-tag.status-starting{color:#9db5cd;border-color:#40536d}
 .container-meta{display:flex;gap:9px 17px;flex-wrap:wrap;margin:14px 0;color:#8298b2;font:9px 'DM Mono',monospace}
 .container-bottom{border-top:1px solid #263347;padding-top:11px;color:#8295ad;font-size:9px}
 .awg-summary{display:flex;gap:7px;flex-wrap:wrap;margin:0 0 13px}
