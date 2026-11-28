@@ -82,6 +82,16 @@ pub trait RuntimeAdapter: Send + Sync {
     ) -> Result<(), &'static str> {
         Err("This runtime does not support live peer removal")
     }
+
+    async fn add_peer(
+        &self,
+        _protocol: &str,
+        _interface_name: &str,
+        _public_key: &str,
+        _allowed_ip: &str,
+    ) -> Result<(), &'static str> {
+        Err("This runtime does not support live peer addition")
+    }
 }
 
 /// Mark interrupted runtime operations as requiring administrator cleanup.
@@ -356,6 +366,63 @@ impl HostRuntime {
         let dump = std::str::from_utf8(&output)
             .map_err(|_| "VPN peer statistics output is not valid UTF-8")?;
         parse_peer_dump(dump)
+    }
+
+    async fn add_peer_to_interface(
+        &self,
+        protocol: &str,
+        interface_name: &str,
+        public_key: &str,
+        allowed_ip: &str,
+    ) -> Result<(), &'static str> {
+        if !self.allow_mutations {
+            return Err("Host mutations are disabled; set HOST_RUNTIME_ALLOW_MUTATIONS=true");
+        }
+        if interface_name.is_empty() || interface_name.len() > 15
+            || !interface_name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        {
+            return Err("Invalid generated VPN interface name");
+        }
+        if base64::engine::general_purpose::STANDARD
+            .decode(public_key)
+            .map_or(true, |key| key.len() != 32)
+        {
+            return Err("Invalid WireGuard peer public key");
+        }
+        let address = allowed_ip.parse::<ipnet::Ipv4Net>()
+            .map_err(|_| "Invalid WireGuard peer allowed IP")?;
+        if address.prefix_len() != 32 {
+            return Err("Live peer addition requires one host IPv4 address (/32)");
+        }
+        let binary = match protocol {
+            "wireguard" => "wg",
+            "amnezia-awg" => "awg",
+            _ => return Err("Live peer addition supports only WireGuard and AmneziaWG"),
+        };
+        if !Self::tools_ready(protocol) {
+            return Err("Required Linux VPN tools, kernel support and CAP_NET_ADMIN are missing");
+        }
+        if !self.interface_exists(interface_name).await? {
+            return Err("Managed VPN interface is not running");
+        }
+        let binary_path = trusted_system_executable(binary)
+            .ok_or("VPN control binary is missing or not root-owned and protected")?;
+        let mut command = Command::new(binary_path);
+        command
+            .env_clear()
+            .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+            .env("LANG", "C")
+            .args(["set", interface_name, "peer", public_key, "allowed-ips", allowed_ip])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        match tokio::time::timeout(Duration::from_secs(10), command.status()).await {
+            Ok(Ok(status)) if status.success() => Ok(()),
+            Ok(Ok(_)) => Err("Could not install the new VPN peer; inspect host service logs"),
+            Ok(Err(_)) => Err("Could not execute VPN peer installation command"),
+            Err(_) => Err("VPN peer installation command timed out"),
+        }
     }
 
     async fn remove_peer_from_interface(
@@ -795,6 +862,16 @@ impl RuntimeAdapter for HostRuntime {
         public_key: &str,
     ) -> Result<(), &'static str> {
         self.remove_peer_from_interface(protocol, interface_name, public_key).await
+    }
+
+    async fn add_peer(
+        &self,
+        protocol: &str,
+        interface_name: &str,
+        public_key: &str,
+        allowed_ip: &str,
+    ) -> Result<(), &'static str> {
+        self.add_peer_to_interface(protocol, interface_name, public_key, allowed_ip).await
     }
 }
 
