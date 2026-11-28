@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chacha20poly1305::{
-    aead::{Aead, KeyInit},
+    aead::{Aead, KeyInit, Payload},
     ChaCha20Poly1305, Nonce,
 };
 use rand_core::{OsRng, RngCore};
@@ -62,7 +62,7 @@ fn encrypt_versioned_secret(
     let mut nonce_bytes = [0u8; 12];
     OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher.encrypt(nonce, secret.as_ref())
+    let ciphertext = cipher.encrypt(nonce, Payload { msg: &secret[..], aad: version })
         .map_err(|_| "Could not encrypt header-protection key")?;
     let mut stored = Vec::with_capacity(version.len() + nonce_bytes.len() + ciphertext.len());
     stored.extend_from_slice(version);
@@ -94,7 +94,7 @@ fn decrypt_versioned_secret(
         .map_err(|_| "Invalid WireGuard master key")?;
     let nonce = Nonce::from_slice(&stored[4..16]);
     let plaintext = Zeroizing::new(
-        cipher.decrypt(nonce, &stored[16..])
+        cipher.decrypt(nonce, Payload { msg: &stored[16..], aad: expected_version })
             .map_err(|_| "Could not authenticate encrypted header-protection key")?
     );
     let key: [u8; 32] = plaintext.as_slice().try_into()
@@ -147,6 +147,9 @@ mod tests {
         assert!(decrypt_header_protection_key(&master, &tampered).is_err());
         assert!(decrypt_private_key(&master, &encrypted_a).is_err());
         assert!(decrypt_header_protection_key(&master, &encrypt_private_key(&master, &[0u8; 32]).unwrap()).is_err());
+        let mut wrong_version = encrypted_a.clone();
+        wrong_version[..4].copy_from_slice(b"WGK1");
+        assert!(decrypt_header_protection_key(&master, &wrong_version).is_err());
     }
 
     #[test]
