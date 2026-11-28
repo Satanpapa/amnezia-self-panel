@@ -102,8 +102,10 @@ pub async fn create(
         return Err((StatusCode::BAD_REQUEST, "Traffic limit cannot be negative"));
     }
     if let Some(expires_at) = &input.expires_at {
-        if chrono::DateTime::parse_from_rfc3339(expires_at).is_err() {
-            return Err((StatusCode::BAD_REQUEST, "Expiration must be an RFC3339 timestamp"));
+        let expiry = chrono::DateTime::parse_from_rfc3339(expires_at)
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Expiration must be an RFC3339 timestamp"))?;
+        if expiry <= chrono::Utc::now() {
+            return Err((StatusCode::BAD_REQUEST, "Expiration must be in the future"));
         }
     }
 
@@ -119,9 +121,23 @@ pub async fn create(
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
     let runtime_operation: Option<String> = sqlx::Row::try_get(&row, "runtime_operation")
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
-    if !profile_is_stopped(&container_status, runtime_operation.as_deref()) {
-        return Err((StatusCode::CONFLICT, "Stop the VPN profile before adding a client; peers are loaded on the next start"));
+    let live_apply = container_status == "running";
+    let runtime_status = state.runtime.status().await;
+
+    if live_apply {
+        if protocol != "wireguard" && protocol != "amnezia-awg" {
+            return Err((StatusCode::CONFLICT, "Live peer addition supports only WireGuard and AmneziaWG"));
+        }
+        if runtime_status.mode != "host" || !runtime_status.can_manage_vpn {
+            return Err((StatusCode::SERVICE_UNAVAILABLE, "Live peer changes require an explicitly enabled Linux host runtime"));
+        }
+        if runtime_operation.is_some() {
+            return Err((StatusCode::CONFLICT, "Another VPN runtime operation is in progress; retry after it finishes"));
+        }
+    } else if !profile_is_stopped(&container_status, runtime_operation.as_deref()) {
+        return Err((StatusCode::CONFLICT, "VPN profile must be stopped before adding a client"));
     }
+
     if protocol == "amnezia-awg" || protocol == "wireguard" {
         let server_public_key: Option<String> = sqlx::Row::try_get(&row, "wireguard_server_public_key")
             .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
@@ -156,6 +172,25 @@ pub async fn create(
     let assigned_ip = first_available_client_ip(subnet, &used)
         .ok_or((StatusCode::CONFLICT, "No free IP addresses remain in this subnet"))?;
 
+    let interface_name = if live_apply {
+        Some(crate::runtime::interface_name_for_profile(&protocol, &container_id)
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not derive interface name"))?)
+    } else {
+        None
+    };
+
+    // The same per-profile lock serializes live peer installation with stop,
+    // revocation and the background expiry worker.
+    if live_apply {
+        let claimed = sqlx::query(
+            "UPDATE protocol_containers SET runtime_operation = 'sync' WHERE id = ? AND status = 'running' AND runtime_operation IS NULL"
+        ).bind(&container_id).execute(&state.pool).await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not claim live peer installation"))?;
+        if claimed.rows_affected() != 1 {
+            return Err((StatusCode::CONFLICT, "VPN profile state changed; refresh and retry"));
+        }
+    }
+
     let id = Uuid::new_v4().to_string();
     let subscription_token = new_session_token();
     let token_hash = hash_session_token(&subscription_token);
@@ -163,59 +198,169 @@ pub async fn create(
         Some((public_key, encrypted)) => (Some(public_key), Some(encrypted)),
         None => (None, None),
     };
-    let mut tx = state.pool.begin().await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not begin client creation"))?;
-    let insert_result = sqlx::query(
-        "INSERT INTO clients (id, container_id, name, note, assigned_ip, enabled, subscription_token_hash, traffic_limit_bytes, expires_at, wireguard_public_key, wireguard_private_key_encrypted) SELECT ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM protocol_containers WHERE id = ? AND status IN ('preview', 'stopped') AND runtime_operation IS NULL)"
-    )
-    .bind(&id).bind(&container_id).bind(name).bind(note.trim())
-    .bind(assigned_ip.to_string()).bind(token_hash).bind(traffic_limit)
-    .bind(input.expires_at).bind(&public_key).bind(&encrypted_private_key).bind(&container_id).execute(&mut *tx).await
-    .map_err(|error| {
-        if let sqlx::Error::Database(db_error) = &error {
-            if db_error.is_unique_violation() || db_error.message().contains("duplicate_client_ip") {
-                return (StatusCode::CONFLICT, "The selected client IP is already allocated; refresh and retry");
-            }
+    let expected_status = container_status.clone();
+    let expected_operation = if live_apply { Some("sync") } else { None };
+    let expires_at = input.expires_at.clone();
+
+    let creation_result: Result<(ClientRecord, i64), (StatusCode, &'static str)> = async {
+        let mut tx = state.pool.begin().await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not begin client creation"))?;
+        let insert_sql = if live_apply {
+            "INSERT INTO clients (id, container_id, name, note, assigned_ip, enabled, subscription_token_hash, traffic_limit_bytes, expires_at, wireguard_public_key, wireguard_private_key_encrypted) SELECT ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM protocol_containers WHERE id = ? AND status = 'running' AND runtime_operation = 'sync')"
+        } else {
+            "INSERT INTO clients (id, container_id, name, note, assigned_ip, enabled, subscription_token_hash, traffic_limit_bytes, expires_at, wireguard_public_key, wireguard_private_key_encrypted) SELECT ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM protocol_containers WHERE id = ? AND status = ? AND runtime_operation IS NULL)"
+        };
+        let mut insert = sqlx::query(insert_sql)
+            .bind(&id).bind(&container_id).bind(name).bind(note.trim())
+            .bind(assigned_ip.to_string()).bind(&token_hash).bind(traffic_limit)
+            .bind(expires_at).bind(&public_key).bind(&encrypted_private_key).bind(&container_id);
+        if !live_apply {
+            insert = insert.bind(&expected_status);
         }
-        tracing::error!("Failed to create client: {error}");
-        (StatusCode::INTERNAL_SERVER_ERROR, "Could not save client")
-    })?;
-    if insert_result.rows_affected() == 0 {
-        return Err((StatusCode::CONFLICT, "VPN profile started while the client was being created; refresh and retry"));
-    }
+        let insert_result = insert.execute(&mut *tx).await
+            .map_err(|error| {
+                if let sqlx::Error::Database(db_error) = &error {
+                    if db_error.is_unique_violation() || db_error.message().contains("duplicate_client_ip") {
+                        return (StatusCode::CONFLICT, "The selected client IP is already allocated; refresh and retry");
+                    }
+                }
+                tracing::error!("Failed to create client: {error}");
+                (StatusCode::INTERNAL_SERVER_ERROR, "Could not save client")
+            })?;
+        if insert_result.rows_affected() == 0 {
+            return Err((StatusCode::CONFLICT, "VPN profile state changed while the client was being created; refresh and retry"));
+        }
 
-    let revision_update = sqlx::query(
-        "UPDATE protocol_containers SET revision = revision + 1 WHERE id = ? AND status IN ('preview', 'stopped') AND runtime_operation IS NULL"
-    ).bind(&container_id).execute(&mut *tx).await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not advance VPN profile revision"))?;
-    if revision_update.rows_affected() != 1 {
-        return Err((StatusCode::CONFLICT, "VPN profile started while the client was being created; refresh and retry"));
-    }
-    let revision: i64 = sqlx::query_scalar("SELECT revision FROM protocol_containers WHERE id = ?")
-        .bind(&container_id).fetch_one(&mut *tx).await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read VPN profile revision"))?;
-    let details = serde_json::json!({
-        "client_id": id,
-        "container_id": container_id,
-        "assigned_ip": assigned_ip.to_string(),
-        "revision": revision,
-        "runtime_applied": false
-    }).to_string();
-    sqlx::query("INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'client.created', ?)")
-        .bind(admin_id).bind(details).execute(&mut *tx).await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not record client creation"))?;
-    tx.commit().await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not commit client creation"))?;
+        let revision_sql = if live_apply {
+            "UPDATE protocol_containers SET revision = revision + 1 WHERE id = ? AND status = 'running' AND runtime_operation = 'sync'"
+        } else {
+            "UPDATE protocol_containers SET revision = revision + 1 WHERE id = ? AND status = ? AND runtime_operation IS NULL"
+        };
+        let mut revision_update = sqlx::query(revision_sql).bind(&container_id);
+        if !live_apply {
+            revision_update = revision_update.bind(&expected_status);
+        }
+        let revision_update = revision_update.execute(&mut *tx).await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not advance VPN profile revision"))?;
+        if revision_update.rows_affected() != 1 {
+            return Err((StatusCode::CONFLICT, "VPN profile state changed while the client was being created; refresh and retry"));
+        }
+        let revision: i64 = sqlx::query_scalar("SELECT revision FROM protocol_containers WHERE id = ?")
+            .bind(&container_id).fetch_one(&mut *tx).await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read VPN profile revision"))?;
+        let item = sqlx::query_as::<_, ClientRecord>(
+            "SELECT id, container_id, name, note, assigned_ip, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, wireguard_public_key FROM clients WHERE id = ?"
+        ).bind(&id).fetch_one(&mut *tx).await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read saved client"))?;
 
-    let item = sqlx::query_as::<_, ClientRecord>(
-        "SELECT id, container_id, name, note, assigned_ip, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, wireguard_public_key FROM clients WHERE id = ?"
-    ).bind(&id).fetch_one(&state.pool).await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read saved client"))?;
+        if !live_apply {
+            let details = serde_json::json!({
+                "client_id": id,
+                "container_id": container_id,
+                "assigned_ip": assigned_ip.to_string(),
+                "revision": revision,
+                "runtime_applied": false
+            }).to_string();
+            sqlx::query("INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'client.created', ?)")
+                .bind(admin_id).bind(details).execute(&mut *tx).await
+                .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not record client creation"))?;
+        }
+        tx.commit().await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not commit client creation"))?;
+        Ok((item, revision))
+    }.await;
+
+    let (item, revision) = match creation_result {
+        Ok(value) => value,
+        Err(error) => {
+            if live_apply {
+                let release = sqlx::query(
+                    "UPDATE protocol_containers SET runtime_operation = NULL WHERE id = ? AND status = 'running' AND runtime_operation = 'sync'"
+                ).bind(&container_id).execute(&state.pool).await;
+                if let Err(release_error) = release {
+                    tracing::error!(container_id = %container_id, "Could not release live peer installation lock: {release_error}");
+                }
+            }
+            return Err(error);
+        }
+    };
+
+    if live_apply {
+        let public_key = item.wireguard_public_key.as_deref()
+            .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "New live client has no WireGuard public key"))?;
+        let allowed_ip = format!("{}/32", item.assigned_ip);
+        let interface_name = interface_name.as_deref()
+            .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "Live VPN interface name is missing"))?;
+
+        if let Err(add_error) = state.runtime.add_peer(&protocol, interface_name, public_key, &allowed_ip).await {
+            // A failed command can still leave uncertain runtime state. Attempt a
+            // targeted rollback, then force explicit cleanup if either probe fails.
+            let cleanup_ok = state.runtime.remove_peer(&protocol, interface_name, public_key).await.is_ok();
+            let interface_up = state.runtime.interface_is_up(&protocol, interface_name).await.unwrap_or(false);
+            let needs_recovery = !cleanup_ok || !interface_up;
+
+            match state.pool.begin().await {
+                Ok(mut tx) => {
+                    let _ = sqlx::query("UPDATE clients SET enabled = 0 WHERE id = ? AND container_id = ?")
+                        .bind(&id).bind(&container_id).execute(&mut *tx).await;
+                    let profile_status = if needs_recovery { "error" } else { "running" };
+                    let update = sqlx::query(
+                        "UPDATE protocol_containers SET status = ?, revision = revision + 1, runtime_operation = NULL WHERE id = ? AND status = 'running' AND runtime_operation = 'sync'"
+                    ).bind(profile_status).bind(&container_id).execute(&mut *tx).await;
+                    let details = serde_json::json!({
+                        "client_id": id,
+                        "container_id": container_id,
+                        "runtime_error": add_error,
+                        "rollback_succeeded": cleanup_ok,
+                        "interface_verified_running": interface_up
+                    }).to_string();
+                    let audit = sqlx::query(
+                        "INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'client.live_create_failed', ?)"
+                    ).bind(admin_id).bind(details).execute(&mut *tx).await;
+                    if update.is_ok() && audit.is_ok() {
+                        if let Err(error) = tx.commit().await {
+                            tracing::error!(container_id = %container_id, "Could not commit failed live peer installation recovery: {error}");
+                        }
+                    } else {
+                        tracing::error!(container_id = %container_id, "Could not persist failed live peer installation recovery state");
+                    }
+                }
+                Err(error) => tracing::error!(container_id = %container_id, "Could not begin failed live peer installation recovery: {error}"),
+            }
+            return Err((StatusCode::BAD_GATEWAY, "Could not install the new peer on the live VPN interface; inspect the profile state and retry"));
+        }
+
+        let mut tx = state.pool.begin().await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Peer installed, but could not finalize the profile update"))?;
+        let released = sqlx::query(
+            "UPDATE protocol_containers SET runtime_operation = NULL WHERE id = ? AND status = 'running' AND runtime_operation = 'sync'"
+        ).bind(&container_id).execute(&mut *tx).await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Peer installed, but could not release the profile lock"))?;
+        if released.rows_affected() != 1 {
+            return Err((StatusCode::CONFLICT, "Peer installed, but profile state requires reconciliation"));
+        }
+        let details = serde_json::json!({
+            "client_id": id,
+            "container_id": container_id,
+            "assigned_ip": assigned_ip.to_string(),
+            "revision": revision,
+            "runtime_applied": true
+        }).to_string();
+        sqlx::query("INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'client.created', ?)")
+            .bind(admin_id).bind(details).execute(&mut *tx).await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Peer installed, but could not record client creation"))?;
+        tx.commit().await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Peer installed, but could not commit client creation audit"))?;
+    }
 
     Ok(Json(CreateClientResponse {
         item,
         subscription_token,
-        notice: "Subscription token is shown once. This peer will be installed the next time the stopped VPN profile starts; a client .conf export is available separately.",
+        notice: if live_apply {
+            "Peer was installed on the running VPN interface immediately. The subscription token is shown once; download the client .conf separately."
+        } else {
+            "Subscription token is shown once. This peer will be installed the next time the stopped VPN profile starts; a client .conf export is available separately."
+        },
     }))
 }
 
