@@ -307,3 +307,54 @@ pub async fn client_config(
 
     Ok(config_response("attachment; filename=\"client.conf\"", config))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{active_at_now, config_response};
+    use axum::http::{
+        header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, PRAGMA},
+        StatusCode,
+    };
+    use zeroize::Zeroizing;
+
+    #[test]
+    fn client_activity_requires_enabled_and_unexpired_access() {
+        assert_eq!(active_at_now(false, None).unwrap(), false);
+        assert_eq!(active_at_now(false, Some("not-a-date".into())).unwrap(), false);
+        assert_eq!(active_at_now(true, None).unwrap(), true);
+        assert_eq!(
+            active_at_now(true, Some("2000-01-01T00:00:00Z".into())).unwrap(),
+            false
+        );
+        assert_eq!(
+            active_at_now(true, Some("2999-01-01T00:00:00Z".into())).unwrap(),
+            true
+        );
+        assert_eq!(
+            active_at_now(true, Some("not-a-date".into())).unwrap_err(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn config_responses_are_attachments_and_never_cacheable() {
+        let response = config_response(
+            "attachment; filename=\"client.conf\"",
+            Zeroizing::new("[Interface]\\n".to_string()),
+        );
+        let headers = response.headers();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(headers.get(CONTENT_TYPE).unwrap(), "text/plain; charset=utf-8");
+        assert_eq!(
+            headers.get(CACHE_CONTROL).unwrap(),
+            "no-store, no-cache, must-revalidate, max-age=0"
+        );
+        assert_eq!(headers.get(PRAGMA).unwrap(), "no-cache");
+        assert_eq!(
+            headers.get(CONTENT_DISPOSITION).unwrap(),
+            "attachment; filename=\"client.conf\""
+        );
+        assert_eq!(headers.get("X-Content-Type-Options").unwrap(), "nosniff");
+        assert_eq!(headers.get("X-Amnezia-Config-Status").unwrap(), "draft");
+    }
+}
