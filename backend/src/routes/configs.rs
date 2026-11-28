@@ -193,7 +193,7 @@ pub async fn client_config(
     let (admin_id, _) = authenticated_admin(&state, &jar).await
         .map_err(|status| (status, "Authentication required"))?;
     let row = sqlx::query(
-        "SELECT c.container_id, c.assigned_ip, c.enabled, c.expires_at, c.wireguard_public_key, c.wireguard_private_key_encrypted, p.protocol, p.endpoint, p.listen_port, p.dns, p.mtu, p.awg_settings_json, p.wireguard_server_public_key, p.awg_header_protection_key_encrypted FROM clients c JOIN protocol_containers p ON p.id = c.container_id WHERE c.id = ?"
+        "SELECT c.container_id, c.assigned_ip, c.enabled, c.expires_at, c.wireguard_public_key, c.wireguard_private_key_encrypted, p.protocol, p.endpoint, p.listen_port, p.dns, p.mtu, p.awg_settings_json, p.wireguard_server_public_key, p.wireguard_server_private_key_encrypted, p.awg_header_protection_key_encrypted FROM clients c JOIN protocol_containers p ON p.id = c.container_id WHERE c.id = ?"
     ).bind(&client_id).fetch_optional(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?
         .ok_or((StatusCode::NOT_FOUND, "Client not found"))?;
@@ -235,6 +235,15 @@ pub async fn client_config(
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid server public key"))?;
     let server_public_key = server_public_key
         .ok_or((StatusCode::CONFLICT, "Server identity has not been provisioned"))?;
+    let server_private_encrypted: Option<Vec<u8>> = row.try_get("wireguard_server_private_key_encrypted")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid encrypted server private key"))?;
+    let server_private_encrypted = server_private_encrypted
+        .ok_or((StatusCode::CONFLICT, "Encrypted server private key is missing"))?;
+    let server_private = decrypt_private_key(master_key, &server_private_encrypted)
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not decrypt server private key"))?;
+    if public_key_from_private(&server_private) != server_public_key {
+        return Err((StatusCode::CONFLICT, "Stored server public/private keys do not match"));
+    }
     let endpoint: String = row.try_get("endpoint")
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid server endpoint"))?;
     let listen_port: i64 = row.try_get("listen_port")
