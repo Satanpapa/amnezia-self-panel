@@ -155,16 +155,16 @@ impl HostRuntime {
     }
 
     fn tools_ready(protocol: &str) -> bool {
-        let ip = executable_in_path("ip");
+        let ip = trusted_executable_in_system_path("ip");
         let tun = has_tun_device();
         let net_admin = has_cap_net_admin();
         match protocol {
             "wireguard" => ip && net_admin
-                && executable_in_path("wg") && executable_in_path("wg-quick")
-                && (has_kernel_module("wireguard") || (executable_in_path("wireguard-go") && tun)),
+                && trusted_executable_in_system_path("wg") && trusted_executable_in_system_path("wg-quick")
+                && (has_kernel_module("wireguard") || (trusted_executable_in_system_path("wireguard-go") && tun)),
             "amnezia-awg" => ip && net_admin
-                && executable_in_path("awg") && executable_in_path("awg-quick")
-                && (has_kernel_module("amneziawg") || (executable_in_path("amneziawg-go") && tun)),
+                && trusted_executable_in_system_path("awg") && trusted_executable_in_system_path("awg-quick")
+                && (has_kernel_module("amneziawg") || (trusted_executable_in_system_path("amneziawg-go") && tun)),
             _ => false,
         }
     }
@@ -216,8 +216,15 @@ impl HostRuntime {
         action: &'static str,
         path: &Path,
     ) -> Result<(), &'static str> {
-        let mut command = Command::new(binary);
-        command.arg(action).arg(path)
+        let binary_path = trusted_system_executable(binary)
+            .ok_or("VPN quick binary is missing or not root-owned and protected")?;
+        let mut command = Command::new(binary_path);
+        command
+            .env_clear()
+            .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+            .env("LANG", "C")
+            .arg(action)
+            .arg(path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -231,20 +238,75 @@ impl HostRuntime {
     }
 }
 
-fn executable_in_path(name: &str) -> bool {
-    let Some(path) = env::var_os("PATH") else { return false };
-    env::split_paths(&path).any(|directory| {
-        let candidate = directory.join(name);
-        let Ok(metadata) = fs::metadata(&candidate) else { return false };
-        if !metadata.is_file() { return false; }
+fn trusted_executable_in_system_path(name: &str) -> bool {
+    trusted_system_executable(name).is_some()
+}
+
+/// Resolve binaries only from standard system directories. Refuse binaries or
+/// parent directories that are not root-owned or are group/world writable.
+fn trusted_system_executable(name: &str) -> Option<PathBuf> {
+    if name.is_empty() || !name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_') {
+        return None;
+    }
+    const DIRECTORIES: [&str; 6] = [
+        "/usr/local/sbin",
+        "/usr/local/bin",
+        "/usr/sbin",
+        "/usr/bin",
+        "/sbin",
+        "/bin",
+    ];
+    for directory in DIRECTORIES {
+        let candidate = fs::canonicalize(Path::new(directory).join(name)).ok()?;
+        let metadata = fs::metadata(&candidate).ok()?;
+        if !metadata.is_file() {
+            continue;
+        }
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            metadata.permissions().mode() & 0o111 != 0
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            if metadata.uid() != 0
+                || metadata.permissions().mode() & 0o022 != 0
+                || metadata.permissions().mode() & 0o111 == 0
+            {
+                continue;
+            }
+            let mut parent = candidate.parent()?;
+            let trusted_root = if candidate.starts_with("/usr") {
+                Path::new("/usr")
+            } else if candidate.starts_with("/bin") {
+                Path::new("/bin")
+            } else if candidate.starts_with("/sbin") {
+                Path::new("/sbin")
+            } else {
+                continue;
+            };
+            let mut safe = true;
+            loop {
+                let parent_meta = fs::metadata(parent).ok()?;
+                if parent_meta.uid() != 0 || parent_meta.permissions().mode() & 0o022 != 0 {
+                    safe = false;
+                    break;
+                }
+                if parent == trusted_root {
+                    break;
+                }
+                let Some(next) = parent.parent() else {
+                    safe = false;
+                    break;
+                };
+                parent = next;
+            }
+            if safe {
+                return Some(candidate);
+            }
         }
         #[cfg(not(unix))]
-        { true }
-    })
+        {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn effective_caps_include_net_admin(status: &str) -> bool {
@@ -306,15 +368,15 @@ impl RuntimeAdapter for HostRuntime {
                 "Linux VPN tools are ready, but interface changes are disabled. Set HOST_RUNTIME_ALLOW_MUTATIONS=true to enable them.".to_string()
             } else {
                 let mut missing = Vec::new();
-                if !executable_in_path("ip") { missing.push("iproute2 (ip)"); }
+                if !trusted_executable_in_system_path("ip") { missing.push("iproute2 (ip)"); }
                 if !has_cap_net_admin() { missing.push("CAP_NET_ADMIN"); }
                 if !has_tun_device() && !has_kernel_module("amneziawg") && !has_kernel_module("wireguard") {
                     missing.push("/dev/net/tun or a loaded VPN kernel module");
                 }
-                if !executable_in_path("awg") || !executable_in_path("awg-quick") {
+                if !trusted_executable_in_system_path("awg") || !trusted_executable_in_system_path("awg-quick") {
                     missing.push("AmneziaWG awg and awg-quick");
                 }
-                if !executable_in_path("wg") || !executable_in_path("wg-quick") {
+                if !trusted_executable_in_system_path("wg") || !trusted_executable_in_system_path("wg-quick") {
                     missing.push("WireGuard wg and wg-quick");
                 }
                 format!("Linux host preflight incomplete: {}.", missing.join(", "))
