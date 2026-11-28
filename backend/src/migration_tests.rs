@@ -48,6 +48,14 @@ async fn all_sqlite_migrations_apply_to_a_fresh_database() {
     .expect("login throttle table should exist");
     assert_eq!(login_throttle_table, 1);
 
+    let login_throttle_index: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'auth_login_attempts_blocked_until'"
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("login throttle index should exist");
+    assert_eq!(login_throttle_index, 1);
+
     for column in ["username_hash", "window_started_at", "failure_count", "blocked_until"] {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pragma_table_info('auth_login_attempts') WHERE name = ?"
