@@ -358,7 +358,7 @@ function App() {
                 <label className="check-label"><input type="checkbox" checked={awgDraft.random_trailers} onChange={e => setAwgDraft({...awgDraft,random_trailers:e.target.checked})} /> RandomTrailers</label>
                 <label className="check-label"><input type="checkbox" checked={awgDraft.disable_cookies} onChange={e => setAwgDraft({...awgDraft,disable_cookies:e.target.checked})} /> DisableCookies</label>
               </>}
-              <div className="awg-footnote">H1–H4 могут быть числами или диапазонами без пересечений. I1–I5 — CPS-цепочка; суммарно не более 3000 символов. Для AWG 3.1 здесь хранятся флаги RandomTrailers / DisableCookies и ContentPaddingAddition. HeaderProtectionKey можно создать для AWG 3.1 после установки S1–S4 не меньше 12; он хранится только в зашифрованном виде и не показывается в UI.</div>
+              <div className="awg-footnote">H1–H4 могут быть числами или диапазонами без пересечений. При HeaderProtectionKey официальная рекомендация — H1=1, H2=2, H3=3, H4=4. I1–I5 — CPS-цепочка; суммарно не более 3000 символов. Для AWG 3.1 здесь хранятся флаги RandomTrailers / DisableCookies и ContentPaddingAddition. HeaderProtectionKey можно создать для AWG 3.1 после установки S1–S4 не меньше 12; он хранится только в зашифрованном виде и не показывается в UI.</div>
             </>}
             <div className="form-actions"><span>PREVIEW · Сохранение не запускает VPN и не применяет настройки к серверу.</span><button className="primary" disabled={actionBusy}>{actionBusy ? 'Сохранение…' : editingAwgId ? 'Сохранить новую ревизию AWG' : 'Создать профиль'}</button></div>
           </form>}
