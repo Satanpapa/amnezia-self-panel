@@ -465,7 +465,7 @@ function App() {
             <div className="client-table"><div className="client-row client-header"><span>УСТРОЙСТВО</span><span>IP-АДРЕС</span><span>ПРОТОКОЛ</span><span>ДОСТУП</span><span>ТРАФИК / HANDSHAKE</span><span>ДЕЙСТВИЕ</span></div>
               {filteredClients.map(client => {
                 const owner = containers.find(c => c.id === client.container_id);
-                const canRevoke = !!owner && !owner.runtime_operation && ((owner.status === 'preview' || owner.status === 'stopped' || owner.status === 'error') || (owner.status === 'running' && runtimeStatus?.mode === 'host' && (owner.protocol === 'wireguard' || owner.protocol === 'amnezia-awg')));
+                const canRevoke = !!owner && !owner.runtime_operation && ((owner.status === 'preview' || owner.status === 'stopped') || (owner.status === 'running' && runtimeStatus?.mode === 'host' && runtimeStatus.can_manage_vpn && (owner.protocol === 'wireguard' || owner.protocol === 'amnezia-awg')));
                 const livePeer = owner ? peerStats[owner.id]?.items.find(item => item.client_id === client.id) : undefined;
                 return <div className="client-row" key={client.id}>
                   <span><b>{client.name}</b><small>{client.note || owner?.name || 'Без заметки'}</small>{client.wireguard_public_key && <small className="public-key-line"><code title={client.wireguard_public_key}>{client.wireguard_public_key.slice(0, 18)}…</code><button className="text-action" onClick={() => void navigator.clipboard.writeText(client.wireguard_public_key!)}>Копировать public key</button>{client.enabled && <a className="text-action" href={`/api/clients/${client.id}/config`} download="client.conf">Скачать .conf</a>}</small>}</span>
