@@ -10,6 +10,44 @@ use uuid::Uuid;
 use crate::state::AppState;
 use super::auth::authenticated_admin;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AwgUint32Range {
+    Number(u32),
+    Range(String),
+}
+
+impl AwgUint32Range {
+    fn validate(&self) -> Result<(), &'static str> {
+        let Self::Range(value) = self else { return Ok(()) };
+        if value.len() > 21 || value.trim() != value {
+            return Err("ContentPaddingAddition must be a uint32 value or a range such as 16-32");
+        }
+        if value == "(off)" {
+            return Ok(());
+        }
+        let parts: Vec<&str> = value.split('-').collect();
+        match parts.as_slice() {
+            [single] => {
+                single.parse::<u32>()
+                    .map(|_| ())
+                    .map_err(|_| "ContentPaddingAddition values must fit uint32")
+            }
+            [start, end] => {
+                let start = start.parse::<u32>()
+                    .map_err(|_| "ContentPaddingAddition ranges must contain uint32 values")?;
+                let end = end.parse::<u32>()
+                    .map_err(|_| "ContentPaddingAddition ranges must contain uint32 values")?;
+                if start > end {
+                    return Err("ContentPaddingAddition range start must not exceed range end");
+                }
+                Ok(())
+            }
+            _ => Err("ContentPaddingAddition must be a uint32 value or a range such as 16-32"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct AwgSettings {
@@ -30,7 +68,7 @@ pub struct AwgSettings {
     pub i3: Option<String>,
     pub i4: Option<String>,
     pub i5: Option<String>,
-    pub content_padding_addition: Option<u16>,
+    pub content_padding_addition: Option<AwgUint32Range>,
     pub random_trailers: bool,
     pub disable_cookies: bool,
 }
@@ -66,6 +104,9 @@ impl AwgSettings {
         }
         if self.version != "3.1" && (self.content_padding_addition.is_some() || self.random_trailers || self.disable_cookies) {
             return Err("ContentPaddingAddition, RandomTrailers and DisableCookies require AWG 3.1");
+        }
+        if let Some(value) = &self.content_padding_addition {
+            value.validate()?;
         }
 
         let headers = [&self.h1, &self.h2, &self.h3, &self.h4];
@@ -454,10 +495,41 @@ mod tests {
         };
         assert!(legacy.validate().is_err());
         let modern = AwgSettings {
-            version: "3.1".into(), content_padding_addition: Some(16),
+            version: "3.1".into(), content_padding_addition: Some(AwgUint32Range::Number(16)),
             random_trailers: true, disable_cookies: true, ..Default::default()
         };
         assert!(modern.validate().is_ok());
+    }
+
+    #[test]
+    fn validates_awg31_content_padding_uint32_and_ranges() {
+        for value in [
+            AwgUint32Range::Number(u32::MAX),
+            AwgUint32Range::Range("16".into()),
+            AwgUint32Range::Range("16-32".into()),
+            AwgUint32Range::Range("(off)".into()),
+        ] {
+            let settings = AwgSettings {
+                version: "3.1".into(),
+                content_padding_addition: Some(value),
+                ..Default::default()
+            };
+            assert!(settings.validate().is_ok());
+        }
+
+        for value in [
+            AwgUint32Range::Range("32-16".into()),
+            AwgUint32Range::Range("4294967296".into()),
+            AwgUint32Range::Range("1-4294967296".into()),
+            AwgUint32Range::Range("".into()),
+        ] {
+            let settings = AwgSettings {
+                version: "3.1".into(),
+                content_padding_addition: Some(value),
+                ..Default::default()
+            };
+            assert!(settings.validate().is_err());
+        }
     }
 
     #[test]
