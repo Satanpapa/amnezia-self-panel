@@ -166,3 +166,113 @@ async fn reconcile_running_host_interfaces(
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
+#[cfg(test)]
+mod startup_reconciliation_tests {
+    use std::{collections::HashSet, sync::Arc};
+
+    use async_trait::async_trait;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    use crate::{
+        runtime::{interface_name_for_profile, PeerRuntimeStat, RuntimeAdapter, RuntimeStatus},
+        state::AppState,
+    };
+
+    struct FakeHostRuntime {
+        existing_interfaces: HashSet<String>,
+    }
+
+    #[async_trait]
+    impl RuntimeAdapter for FakeHostRuntime {
+        async fn status(&self) -> RuntimeStatus {
+            RuntimeStatus {
+                mode: "host",
+                available: true,
+                engine: "linux-host",
+                message: "test runtime".into(),
+                can_manage_vpn: false,
+            }
+        }
+
+        async fn interface_is_up(
+            &self,
+            _protocol: &str,
+            interface_name: &str,
+        ) -> Result<bool, &'static str> {
+            Ok(self.existing_interfaces.contains(interface_name))
+        }
+
+        async fn peer_stats(
+            &self,
+            _protocol: &str,
+            _interface_name: &str,
+        ) -> Result<Vec<PeerRuntimeStat>, &'static str> {
+            Ok(Vec::new())
+        }
+    }
+
+    async fn state_with_profiles() -> AppState {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE protocol_containers (id TEXT PRIMARY KEY, protocol TEXT NOT NULL, status TEXT NOT NULL, runtime_operation TEXT)"
+        ).execute(&pool).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO protocol_containers (id, protocol, status, runtime_operation) VALUES
+             ('abcdef1234', 'wireguard', 'running', NULL),
+             ('123456789a', 'amnezia-awg', 'running', NULL),
+             ('9876543210', 'wireguard', 'stopped', NULL),
+             ('abcdefabcd', 'openvpn', 'running', NULL)"
+        ).execute(&pool).await.unwrap();
+
+        let still_up = interface_name_for_profile("wireguard", "abcdef1234").unwrap();
+        let runtime = FakeHostRuntime {
+            existing_interfaces: HashSet::from([still_up]),
+        };
+
+        AppState {
+            pool,
+            cookie_secure: false,
+            runtime: Arc::new(runtime),
+            wireguard_master_key: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn marks_missing_linux_interfaces_as_error_but_preserves_existing_and_unmanaged_profiles() {
+        let state = state_with_profiles().await;
+        reconcile_running_host_interfaces(&state).await.unwrap();
+
+        let statuses = sqlx::query_as::<_, (String, String)>(
+            "SELECT id, status FROM protocol_containers ORDER BY id"
+        ).fetch_all(&state.pool).await.unwrap();
+        let status_by_id: std::collections::HashMap<_, _> = statuses.into_iter().collect();
+
+        assert_eq!(status_by_id["abcdef1234"], "running");
+        assert_eq!(status_by_id["123456789a"], "error");
+        assert_eq!(status_by_id["9876543210"], "stopped");
+        // Unsupported protocols are intentionally left for their own runtime adapter.
+        assert_eq!(status_by_id["abcdefabcd"], "running");
+    }
+
+    #[tokio::test]
+    async fn does_not_reconcile_profiles_in_preview_mode() {
+        let state = state_with_profiles().await;
+        let runtime = crate::runtime::PreviewRuntime;
+        let state = AppState {
+            pool: state.pool.clone(),
+            cookie_secure: state.cookie_secure,
+            runtime: Arc::new(runtime),
+            wireguard_master_key: None,
+        };
+        reconcile_running_host_interfaces(&state).await.unwrap();
+        let status: String = sqlx::query_scalar(
+            "SELECT status FROM protocol_containers WHERE id = '123456789a'"
+        ).fetch_one(&state.pool).await.unwrap();
+        assert_eq!(status, "running");
+    }
+}
