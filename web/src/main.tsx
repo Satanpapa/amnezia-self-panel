@@ -28,6 +28,7 @@ type PeerStatsItem = {
   client_id: string; name: string; assigned_ip: string; enabled: boolean; expired: boolean;
   active_on_server: boolean; latest_handshake_unix: number | null;
   rx_bytes: number | null; tx_bytes: number | null;
+  traffic_used_bytes: number; traffic_limit_bytes: number;
 };
 type PeerStatsResponse = {
   container_id: string; interface_name: string; peer_count: number; unmatched_peer_count: number;
@@ -478,7 +479,7 @@ function App() {
                   <span><b>{client.name}</b><small>{client.note || owner?.name || 'Без заметки'}</small>{client.wireguard_public_key && <small className="public-key-line"><code title={client.wireguard_public_key}>{client.wireguard_public_key.slice(0, 18)}…</code><button className="text-action" onClick={() => void navigator.clipboard.writeText(client.wireguard_public_key!)}>Копировать public key</button>{client.enabled && <a className="text-action" href={`/api/clients/${client.id}/config`} download="client.conf">Скачать .conf</a>}</small>}</span>
                   <code>{client.assigned_ip}</code><span className="protocol-cell">{protocolNames[owner?.protocol ?? ''] ?? '—'}</span>
                   <span className={client.enabled ? 'status-enabled' : 'status-disabled'}>{client.enabled ? '● Включён' : '○ Отключён'}</span>
-                  <span className="peer-activity">{owner?.status === 'running' && runtimeStatus?.mode === 'host' ? livePeer ? <><small>{livePeer.active_on_server ? `RX ${formatBytes(livePeer.rx_bytes)} · TX ${formatBytes(livePeer.tx_bytes)}` : 'Не найден на интерфейсе'}</small><small>{formatHandshake(livePeer.latest_handshake_unix)}{livePeer.expired ? ' · ИСТЁК' : ''}</small></> : <small>Получение статистики…</small> : <small>—</small>}</span>
+                  <span className="peer-activity">{owner?.status === 'running' && runtimeStatus?.mode === 'host' ? livePeer ? <><small>{livePeer.active_on_server ? `RX ${formatBytes(livePeer.rx_bytes)} · TX ${formatBytes(livePeer.tx_bytes)}` : 'Не найден на интерфейсе'}</small><small>{livePeer.traffic_limit_bytes > 0 ? `Лимит ${formatBytes(livePeer.traffic_used_bytes)} / ${formatBytes(livePeer.traffic_limit_bytes)}` : `Учтено ${formatBytes(livePeer.traffic_used_bytes)} · без лимита`}</small><small>{formatHandshake(livePeer.latest_handshake_unix)}{livePeer.expired ? ' · ИСТЁК' : ''}</small></> : <small>Получение статистики…</small> : <small>—</small>}</span>
                   <span>{client.enabled && <button className="danger compact" disabled={actionBusy || !canRevoke} title={canRevoke ? (owner?.status === 'running' ? 'Удалить peer из работающего интерфейса' : 'Отозвать доступ') : 'Дождись завершения операции или останови VPN-профиль'} onClick={() => void disableClient(client.id)}>Отозвать</button>}</span>
                 </div>;
               })}
