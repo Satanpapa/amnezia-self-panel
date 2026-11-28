@@ -497,10 +497,10 @@ mod tests {
 
     #[test]
     fn recognizes_effective_root_uid_from_proc_status() {
-        assert!(effective_uid_is_root("Uid:\\t0\\t0\\t0\\t0\\n"));
-        assert!(!effective_uid_is_root("Uid:\\t1000\\t1000\\t1000\\t1000\\n"));
-        assert!(!effective_uid_is_root("Uid:\\t0\\t1000\\t0\\t0\\n"));
-        assert!(!effective_uid_is_root("Name:\\ttest\\n"));
+        assert!(effective_uid_is_root("Uid:\t0\t0\t0\t0\n"));
+        assert!(!effective_uid_is_root("Uid:\t1000\t1000\t1000\t1000\n"));
+        assert!(!effective_uid_is_root("Uid:\t0\t1000\t0\t0\n"));
+        assert!(!effective_uid_is_root("Name:\ttest\n"));
     }
 
     #[test]
@@ -530,7 +530,7 @@ mod tests {
         let path = runtime.config_path("wgabcdef1234").unwrap();
         assert!(path.starts_with(&directory));
         assert!(runtime.config_path("../../etc/passwd").is_err());
-        runtime.write_config_file(&path, b"[Interface]\\n").unwrap();
+        runtime.write_config_file(&path, b"[Interface]\n").unwrap();
         assert!(runtime.write_config_file(&path, b"overwrite").is_err());
 
         #[cfg(unix)]
