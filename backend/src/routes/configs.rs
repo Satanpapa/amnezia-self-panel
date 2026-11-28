@@ -20,6 +20,7 @@ use crate::{
         render_client_config, render_server_config, ClientConfigInput, ConfigPeer,
         ServerConfigInput,
     },
+    runtime::amnezia_uri::encode_vpn_uri,
     security::{
         session::hash_session_token,
         wireguard_keys::{
@@ -42,6 +43,26 @@ fn active_at_now(enabled: bool, expires_at: Option<String>) -> Result<bool, Stat
     let expires = DateTime::parse_from_rfc3339(&expires_at)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(expires.with_timezone(&Utc) > Utc::now())
+}
+
+fn vpn_uri_response(mut uri: Zeroizing<String>) -> Response<Body> {
+    let body = Body::from(mem::take(&mut *uri));
+    let mut response = Response::new(body);
+    *response.status_mut() = StatusCode::OK;
+    let headers = response.headers_mut();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/plain; charset=utf-8"));
+    headers.insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache, must-revalidate, max-age=0"),
+    );
+    headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
+    headers.insert(
+        CONTENT_DISPOSITION,
+        HeaderValue::from_static("attachment; filename=\"client.vpn\""),
+    );
+    headers.insert("X-Content-Type-Options", HeaderValue::from_static("nosniff"));
+    headers.insert("X-Amnezia-Config-Status", HeaderValue::from_static("vpn-uri"));
+    response
 }
 
 fn config_response(filename: &'static str, mut config: Zeroizing<String>) -> Response<Body> {
@@ -415,6 +436,66 @@ pub async fn subscription_config(
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not audit subscription config export"))?;
 
     Ok(config_response("attachment; filename=\"client.conf\"", config))
+}
+
+/// Admin-only export of the native client config in Amnezia's vpn:// envelope.
+pub async fn client_vpn_uri(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(client_id): Path<String>,
+) -> Result<Response<Body>, (StatusCode, &'static str)> {
+    let (admin_id, _) = authenticated_admin(&state, &jar).await
+        .map_err(|status| (status, "Authentication required"))?;
+    let (config, container_id) = build_client_config(&state, &client_id).await?;
+    let uri = encode_vpn_uri(config.as_bytes())
+        .map_err(|message| (StatusCode::UNPROCESSABLE_ENTITY, message))?;
+
+    let details = serde_json::json!({
+        "client_id": client_id,
+        "container_id": container_id,
+        "format": "vpn-uri",
+        "kind": "client",
+        "payload": "native-wireguard-config"
+    }).to_string();
+    sqlx::query(
+        "INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'config.client.vpn_uri_exported', ?)"
+    ).bind(admin_id).bind(details).execute(&state.pool).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not audit client vpn:// export"))?;
+
+    Ok(vpn_uri_response(uri))
+}
+
+/// Bearer-token export of an Amnezia vpn:// client profile.
+pub async fn subscription_vpn_uri(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, (StatusCode, &'static str)> {
+    let token = subscription_bearer_token(&headers)
+        .map_err(|_| (StatusCode::UNAUTHORIZED, "A valid subscription bearer token is required"))?;
+    let token_hash = hash_session_token(token);
+    let client_id: String = sqlx::query_scalar(
+        "SELECT id FROM clients WHERE subscription_token_hash = ?"
+    ).bind(token_hash).fetch_optional(&state.pool).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?
+        .ok_or((StatusCode::UNAUTHORIZED, "Subscription token is invalid"))?;
+
+    let (config, container_id) = build_client_config(&state, &client_id).await?;
+    let uri = encode_vpn_uri(config.as_bytes())
+        .map_err(|message| (StatusCode::UNPROCESSABLE_ENTITY, message))?;
+
+    let details = serde_json::json!({
+        "client_id": client_id,
+        "container_id": container_id,
+        "format": "vpn-uri",
+        "kind": "subscription",
+        "payload": "native-wireguard-config"
+    }).to_string();
+    sqlx::query(
+        "INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (NULL, 'config.client.subscription_vpn_uri_exported', ?)"
+    ).bind(details).execute(&state.pool).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not audit subscription vpn:// export"))?;
+
+    Ok(vpn_uri_response(uri))
 }
 
 #[cfg(test)]
