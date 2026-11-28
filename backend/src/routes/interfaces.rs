@@ -507,6 +507,18 @@ async fn reap_profile_expired_peers(
         return Ok(0);
     }
 
+    match state.runtime.interface_is_up(protocol, interface_name).await {
+        Ok(true) => {}
+        Ok(false) => {
+            sqlx::query(
+                "UPDATE protocol_containers SET status = 'error', runtime_operation = NULL WHERE id = ? AND status = 'running' AND runtime_operation = 'start'"
+            ).bind(profile_id).execute(&state.pool).await
+                .map_err(|_| "Could not mark a missing interface for recovery")?;
+            return Ok(0);
+        }
+        Err(_) => return Err("Could not verify live VPN interface before expiry cleanup"),
+    }
+
     let live_peers = state.runtime.peer_stats(protocol, interface_name).await
         .map_err(|_| "Could not read live peer list before expiry cleanup")?;
     let live_keys: HashSet<String> = live_peers.into_iter()
@@ -517,7 +529,9 @@ async fn reap_profile_expired_peers(
     // operation partially succeeds and a later database commit fails, the next
     // pass sees the peer already absent and safely completes the DB revocation.
     for (_, _, public_key) in &expired {
-        let Some(public_key) = public_key else { continue };
+        let Some(public_key) = public_key else {
+            return Err("An expired enabled client has no public key; refusing to mark it revoked");
+        };
         if live_keys.contains(public_key) {
             state.runtime.remove_peer(protocol, interface_name, public_key).await
                 .map_err(|_| "Could not remove an expired peer from the live VPN interface")?;
@@ -546,10 +560,11 @@ async fn reap_profile_expired_peers(
         if updated.rows_affected() != 1 {
             return Err("Profile state changed during expiry cleanup");
         }
+        let revoked_count = revoked_ids.len();
         let details = serde_json::json!({
             "container_id": profile_id,
-            "client_ids": revoked_ids,
-            "revoked_count": revoked_ids.len(),
+            "client_ids": &revoked_ids,
+            "revoked_count",
             "runtime": "linux-host",
             "automatic": true
         }).to_string();
