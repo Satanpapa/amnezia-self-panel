@@ -138,7 +138,7 @@ function App() {
       i1: text(awgDraft.i1), i2: text(awgDraft.i2), i3: text(awgDraft.i3), i4: text(awgDraft.i4), i5: text(awgDraft.i5),
       content_padding_addition: awgDraft.version === '3.1'
         ? (awgDraft.content_padding_addition.trim() === '' ? undefined
-          : (/^\\d+$/.test(awgDraft.content_padding_addition.trim())
+          : (/^\d+$/.test(awgDraft.content_padding_addition.trim())
             ? Number(awgDraft.content_padding_addition.trim())
             : awgDraft.content_padding_addition.trim()))
         : undefined,
