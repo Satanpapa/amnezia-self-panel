@@ -23,7 +23,8 @@ use crate::{
     security::{
         session::hash_session_token,
         wireguard_keys::{
-            decrypt_header_protection_key, decrypt_private_key, public_key_from_private,
+            decrypt_header_protection_key, decrypt_peer_preshared_key, decrypt_private_key,
+        public_key_from_private,
         },
     },
     state::AppState,
@@ -137,10 +138,10 @@ pub async fn build_server_config(
     };
 
     let client_rows = sqlx::query(
-        "SELECT assigned_ip, enabled, expires_at, wireguard_public_key FROM clients WHERE container_id = ? ORDER BY created_at ASC"
+        "SELECT assigned_ip, enabled, expires_at, wireguard_public_key, wireguard_preshared_key_encrypted FROM clients WHERE container_id = ? ORDER BY created_at ASC"
     ).bind(container_id).fetch_all(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read client peers"))?;
-    let mut peers_owned: Vec<(String, Ipv4Addr)> = Vec::new();
+    let mut peers_owned: Vec<(String, Option<Zeroizing<[u8; 32]>>, Ipv4Addr)> = Vec::new();
     for client in client_rows {
         let enabled: bool = client.try_get("enabled")
             .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid client state"))?;
@@ -154,14 +155,27 @@ pub async fn build_server_config(
             .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid client public key"))?;
         let public_key = public_key
             .ok_or((StatusCode::CONFLICT, "An active client has no WireGuard public key; disable it before exporting"))?;
+        let preshared_encrypted: Option<Vec<u8>> = client.try_get("wireguard_preshared_key_encrypted")
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid encrypted client preshared key"))?;
+        let preshared_key = match preshared_encrypted {
+            Some(encrypted) => Some(
+                decrypt_peer_preshared_key(master_key, &encrypted)
+                    .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not decrypt client preshared key"))?
+            ),
+            None => None,
+        };
         let assigned_ip_text: String = client.try_get("assigned_ip")
             .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid client IP"))?;
         let assigned_ip = Ipv4Addr::from_str(&assigned_ip_text)
             .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "An active client has an invalid IP address"))?;
-        peers_owned.push((public_key, assigned_ip));
+        peers_owned.push((public_key, preshared_key, assigned_ip));
     }
     let peer_refs: Vec<ConfigPeer<'_>> = peers_owned.iter()
-        .map(|(public_key, assigned_ip)| ConfigPeer { public_key, assigned_ip: *assigned_ip })
+        .map(|(public_key, preshared_key, assigned_ip)| ConfigPeer {
+            public_key,
+            preshared_key: preshared_key.as_deref(),
+            assigned_ip: *assigned_ip,
+        })
         .collect();
 
     let config = render_server_config(&ServerConfigInput {
@@ -213,7 +227,7 @@ async fn build_client_config(
     client_id: &str,
 ) -> Result<(Zeroizing<String>, String), (StatusCode, &'static str)> {
     let row = sqlx::query(
-        "SELECT c.container_id, c.assigned_ip, c.enabled, c.expires_at, c.wireguard_public_key, c.wireguard_private_key_encrypted, p.protocol, p.endpoint, p.listen_port, p.dns, p.mtu, p.subnet, p.awg_settings_json, p.wireguard_server_public_key, p.wireguard_server_private_key_encrypted, p.awg_header_protection_key_encrypted FROM clients c JOIN protocol_containers p ON p.id = c.container_id WHERE c.id = ?"
+        "SELECT c.container_id, c.assigned_ip, c.enabled, c.expires_at, c.wireguard_public_key, c.wireguard_private_key_encrypted, c.wireguard_preshared_key_encrypted, p.protocol, p.endpoint, p.listen_port, p.dns, p.mtu, p.subnet, p.awg_settings_json, p.wireguard_server_public_key, p.wireguard_server_private_key_encrypted, p.awg_header_protection_key_encrypted FROM clients c JOIN protocol_containers p ON p.id = c.container_id WHERE c.id = ?"
     ).bind(client_id).fetch_optional(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?
         .ok_or((StatusCode::NOT_FOUND, "Client not found"))?;
@@ -243,6 +257,15 @@ async fn build_client_config(
         .ok_or((StatusCode::CONFLICT, "Encrypted client private key is missing"))?;
     let private_key = decrypt_private_key(master_key, &private_encrypted)
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not decrypt client private key"))?;
+    let preshared_encrypted: Option<Vec<u8>> = row.try_get("wireguard_preshared_key_encrypted")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid encrypted client preshared key"))?;
+    let preshared_key: Option<Zeroizing<[u8; 32]>> = match preshared_encrypted {
+        Some(encrypted) => Some(
+            decrypt_peer_preshared_key(master_key, &encrypted)
+                .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not decrypt client preshared key"))?
+        ),
+        None => None,
+    };
     let client_public_key: Option<String> = row.try_get("wireguard_public_key")
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid client public key"))?;
     let client_public_key = client_public_key
@@ -312,6 +335,7 @@ async fn build_client_config(
         listen_port,
         mtu,
         server_public_key: &server_public_key,
+        preshared_key: preshared_key.as_deref(),
         awg_settings: awg_settings.as_ref(),
         header_protection_key: header_key.as_deref(),
         persistent_keepalive: 25,
