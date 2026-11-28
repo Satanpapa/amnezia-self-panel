@@ -24,6 +24,15 @@ type Client = {
   enabled: boolean; traffic_limit_bytes: number; traffic_used_bytes: number; expires_at: string | null;
   wireguard_public_key?: string | null;
 };
+type PeerStatsItem = {
+  client_id: string; name: string; assigned_ip: string; enabled: boolean; expired: boolean;
+  active_on_server: boolean; latest_handshake_unix: number | null;
+  rx_bytes: number | null; tx_bytes: number | null;
+};
+type PeerStatsResponse = {
+  container_id: string; interface_name: string; peer_count: number; unmatched_peer_count: number;
+  items: PeerStatsItem[];
+};
 type ListResponse<T> = { items: T[] };
 type CreatedClient = { item: Client; subscription_token: string; notice: string };
 type Section = 'overview' | 'protocols' | 'clients';
@@ -52,6 +61,24 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function formatBytes(value: number | null | undefined): string {
+  if (value == null) return '—';
+  if (value < 1024) return `${value} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let amount = value / 1024;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024;
+    unit += 1;
+  }
+  return `${amount.toFixed(amount >= 100 ? 0 : 1)} ${units[unit]}`;
+}
+
+function formatHandshake(value: number | null | undefined): string {
+  if (!value) return 'Нет handshake';
+  return new Date(value * 1000).toLocaleString();
+}
+
 function App() {
   const [loading, setLoading] = useState(true);
   const [setupRequired, setSetupRequired] = useState(false);
@@ -64,6 +91,7 @@ function App() {
   const [error, setError] = useState('');
   const [containers, setContainers] = useState<Container[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
+  const [peerStats, setPeerStats] = useState<Record<string, PeerStatsResponse>>({});
   const [section, setSection] = useState<Section>('overview');
   const [showContainerForm, setShowContainerForm] = useState(false);
   const [editingAwgId, setEditingAwgId] = useState<string | null>(null);
@@ -111,6 +139,55 @@ function App() {
   }
 
   useEffect(() => { void refresh(); }, []);
+
+  // Read-only peer counters are refreshed only for running Linux-host profiles.
+  useEffect(() => {
+    const active = containers.filter(container =>
+      container.status === 'running' && !container.runtime_operation &&
+      (container.protocol === 'wireguard' || container.protocol === 'amnezia-awg')
+    );
+    if (!user || runtimeStatus?.mode !== 'host' || active.length === 0) {
+      setPeerStats({});
+      return;
+    }
+
+    let disposed = false;
+    let polling = false;
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const results = await Promise.all(active.map(async container => {
+          try {
+            const result = await api<PeerStatsResponse>(`/api/containers/${container.id}/peer-stats`);
+            return [container.id, result] as const;
+          } catch {
+            return [container.id, null] as const;
+          }
+        }));
+        if (!disposed) {
+          setPeerStats(current => {
+            const next: Record<string, PeerStatsResponse> = {};
+            for (const container of active) {
+              const result = results.find(([id]) => id === container.id)?.[1];
+              if (result) next[container.id] = result;
+              else if (current[container.id]) next[container.id] = current[container.id];
+            }
+            return next;
+          });
+        }
+      } finally {
+        polling = false;
+      }
+    };
+
+    void poll();
+    const timer = window.setInterval(() => void poll(), 15000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [containers, user, runtimeStatus?.mode]);
 
   async function submitAuth(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError('');
@@ -371,14 +448,16 @@ function App() {
           <div className="filter-bar"><input value={clientSearch} onChange={e => setClientSearch(e.target.value)} placeholder="Поиск по имени, заметке или IP…" /><select value={protocolFilter} onChange={e => setProtocolFilter(e.target.value)}><option value="all">Все протоколы</option>{Object.entries(protocolNames).map(([key,label]) => <option key={key} value={key}>{label}</option>)}</select></div>
           {runtimeStatus?.mode === 'host' && containers.some(container => container.status === 'running') && <p className="section-lead">Сейчас VPN-интерфейс запущен. Добавление, отзыв или истечение доступа пока не меняет активный peer list автоматически: останови и снова запусти соответствующий серверный профиль, чтобы применить изменения.</p>}
           {filteredClients.length === 0 ? <div className="empty small-empty"><b>{clients.length ? 'Ничего не найдено' : 'Клиентов пока нет'}</b><p>{clients.length ? 'Измени поисковый запрос или фильтр.' : 'Добавь устройство в карточке серверного профиля.'}</p></div> :
-            <div className="client-table"><div className="client-row client-header"><span>УСТРОЙСТВО</span><span>IP-АДРЕС</span><span>ПРОТОКОЛ</span><span>ДОСТУП</span><span>ДЕЙСТВИЕ</span></div>
+            <div className="client-table"><div className="client-row client-header"><span>УСТРОЙСТВО</span><span>IP-АДРЕС</span><span>ПРОТОКОЛ</span><span>ДОСТУП</span><span>ТРАФИК / HANDSHAKE</span><span>ДЕЙСТВИЕ</span></div>
               {filteredClients.map(client => {
                 const owner = containers.find(c => c.id === client.container_id);
                 const canRevoke = !!owner && (owner.status === 'preview' || owner.status === 'stopped') && !owner.runtime_operation;
+                const livePeer = owner ? peerStats[owner.id]?.items.find(item => item.client_id === client.id) : undefined;
                 return <div className="client-row" key={client.id}>
                   <span><b>{client.name}</b><small>{client.note || owner?.name || 'Без заметки'}</small>{client.wireguard_public_key && <small className="public-key-line"><code title={client.wireguard_public_key}>{client.wireguard_public_key.slice(0, 18)}…</code><button className="text-action" onClick={() => void navigator.clipboard.writeText(client.wireguard_public_key!)}>Копировать public key</button>{client.enabled && <a className="text-action" href={`/api/clients/${client.id}/config`} download="client.conf">Скачать .conf</a>}</small>}</span>
                   <code>{client.assigned_ip}</code><span className="protocol-cell">{protocolNames[owner?.protocol ?? ''] ?? '—'}</span>
                   <span className={client.enabled ? 'status-enabled' : 'status-disabled'}>{client.enabled ? '● Включён' : '○ Отключён'}</span>
+                  <span className="peer-activity">{owner?.status === 'running' && runtimeStatus?.mode === 'host' ? livePeer ? <><small>{livePeer.active_on_server ? `RX ${formatBytes(livePeer.rx_bytes)} · TX ${formatBytes(livePeer.tx_bytes)}` : 'Не найден на интерфейсе'}</small><small>{formatHandshake(livePeer.latest_handshake_unix)}{livePeer.expired ? ' · ИСТЁК' : ''}</small></> : <small>Получение статистики…</small> : <small>—</small>}</span>
                   <span>{client.enabled && <button className="danger compact" disabled={actionBusy || !canRevoke} title={canRevoke ? 'Отозвать доступ' : 'Сначала останови VPN-профиль'} onClick={() => void disableClient(client.id)}>Отозвать</button>}</span>
                 </div>;
               })}
