@@ -4,7 +4,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use ipnet::Ipv4Net;
 use zeroize::Zeroizing;
 
-use crate::routes::containers::{AwgSettings, AwgUint32Range};
+use crate::routes::containers::{AwgSettings, AwgPaddingRange};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ConfigPeer<'a> {
@@ -89,8 +89,8 @@ fn append_client_awg(output: &mut Zeroizing<String>, settings: &AwgSettings) {
     }
     if let Some(value) = &settings.content_padding_addition {
         let rendered = match value {
-            AwgUint32Range::Number(value) => value.to_string(),
-            AwgUint32Range::Range(value) => value.clone(),
+            AwgPaddingRange::Number(value) => value.to_string(),
+            AwgPaddingRange::Range(value) => value.clone(),
         };
         let _ = writeln!(output, "ContentPaddingAddition = {rendered}");
     }
@@ -263,7 +263,7 @@ mod tests {
             h3: Some("300".into()),
             h4: Some("400".into()),
             i1: Some("<r 8><t>".into()),
-            content_padding_addition: Some(AwgUint32Range::Range("16-32".into())),
+            content_padding_addition: Some(AwgPaddingRange::Range("16-32".into())),
             random_trailers: true,
             disable_cookies: true,
         }
