@@ -12,7 +12,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::{
     routes::{auth, clients, containers, runtime as runtime_routes, setup, system},
-    runtime::{DockerRuntime, PreviewRuntime, RuntimeAdapter},
+    runtime::{DockerRuntime, HostRuntime, PreviewRuntime, RuntimeAdapter},
     state::AppState,
 };
 
@@ -40,8 +40,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let runtime: Arc<dyn RuntimeAdapter> = match env::var("RUNTIME_MODE").as_deref() {
         Ok("docker") => Arc::new(DockerRuntime::new()),
+        Ok("host") => Arc::new(HostRuntime),
         Ok("preview") | Err(_) => Arc::new(PreviewRuntime),
-        Ok(other) => return Err(format!("Unsupported RUNTIME_MODE '{other}'. Use 'preview' or 'docker'.").into()),
+        Ok(other) => return Err(format!("Unsupported RUNTIME_MODE '{other}'. Use 'preview', 'host' or 'docker'.").into()),
     };
 
     let wireguard_master_key = match env::var("WIREGUARD_MASTER_KEY") {
