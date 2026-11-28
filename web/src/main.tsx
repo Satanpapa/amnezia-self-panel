@@ -169,6 +169,17 @@ function App() {
     finally { setActionBusy(false); }
   }
 
+  async function operateInterface(containerId: string, action: 'start' | 'stop') {
+    setActionBusy(true); setError('');
+    try {
+      await api('/api/containers/' + containerId + '/' + action, { method: 'POST', body: '{}' });
+      await loadWorkspace();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : (action === 'start' ? 'Не удалось запустить VPN-интерфейс' : 'Не удалось остановить VPN-интерфейс'));
+      await loadWorkspace().catch(() => undefined);
+    } finally { setActionBusy(false); }
+  }
+
   async function provisionServerKey(containerId: string) {
     setActionBusy(true); setError('');
     try {
@@ -226,7 +237,7 @@ function App() {
 
   function renderContainerCard(container: Container) {
     return <div key={container.id}>
-      <ContainerCard container={container} clients={clients} onEdit={() => beginAwgEdit(container)} onProvisionKey={() => void provisionServerKey(container.id)} onProvisionHeaderKey={() => void provisionAwgHeaderProtectionKey(container.id)} onAdd={() => {
+      <ContainerCard container={container} clients={clients} runtimeCanManage={!!runtimeStatus?.can_manage_vpn} onStart={() => void operateInterface(container.id, 'start')} onStop={() => void operateInterface(container.id, 'stop')} onEdit={() => beginAwgEdit(container)} onProvisionKey={() => void provisionServerKey(container.id)} onProvisionHeaderKey={() => void provisionAwgHeaderProtectionKey(container.id)} onAdd={() => {
         setClientFormFor(clientFormFor === container.id ? null : container.id);
         setClientName(''); setClientNote('');
       }} />
@@ -313,7 +324,7 @@ function App() {
 
         {section === 'protocols' && <section className="panel">
           <div className="panel-head"><div><small>PROTOCOL LAB</small><h2>Серверные профили</h2></div><button className="primary compact" onClick={() => { setShowContainerForm(v => !v); setEditingAwgId(null); }}>{showContainerForm ? 'Закрыть редактор' : '＋ Новый профиль'}</button></div>
-          <p className="section-lead">Параметры сохраняются в базе и проходят серверную валидацию. Фактический запуск интерфейса VPN пока не включён.</p>
+          <p className="section-lead">Параметры сохраняются в базе и проходят серверную валидацию. Запуск и остановка доступны только в Linux host runtime при явно включённом HOST_RUNTIME_ALLOW_MUTATIONS.</p>
           {showContainerForm && <form className="editor-form" onSubmit={createContainer}>
             <div className="form-section-title">{editingAwgId ? 'РЕДАКТИРОВАНИЕ AWG · БАЗОВЫЕ ПАРАМЕТРЫ НЕ ИЗМЕНЯЮТСЯ' : '01 / БАЗОВЫЕ ПАРАМЕТРЫ'}</div>
             <label>Название<input required minLength={2} maxLength={48} disabled={!!editingAwgId} value={containerDraft.name} onChange={e => setContainerDraft({...containerDraft,name:e.target.value})} placeholder="Например, Finland AWG" /></label>
@@ -377,17 +388,17 @@ function App() {
   );
 }
 
-function ContainerCard({ container, clients, onAdd, onEdit, onProvisionKey, onProvisionHeaderKey }: { container: Container; clients: Client[]; onAdd: () => void; onEdit: () => void; onProvisionKey: () => void; onProvisionHeaderKey: () => void }) {
+function ContainerCard({ container, clients, runtimeCanManage, onStart, onStop, onAdd, onEdit, onProvisionKey, onProvisionHeaderKey }: { container: Container; clients: Client[]; runtimeCanManage: boolean; onStart: () => void; onStop: () => void; onAdd: () => void; onEdit: () => void; onProvisionKey: () => void; onProvisionHeaderKey: () => void }) {
   const related = clients.filter(client => client.container_id === container.id);
   let awg: Partial<AwgSettings> = {};
   try { awg = JSON.parse(container.awg_settings_json || '{}') as Partial<AwgSettings>; } catch {}
   return <article className="container-card">
-    <div className="container-top"><div><b>{container.name}</b><span className="protocol-tag">{protocolNames[container.protocol] ?? container.protocol}</span></div><span className="preview-tag">PREVIEW</span></div>
+    <div className="container-top"><div><b>{container.name}</b><span className="protocol-tag">{protocolNames[container.protocol] ?? container.protocol}</span></div><span className={`preview-tag ${container.status === 'running' ? 'status-running' : container.status === 'error' ? 'status-error' : ''}`}>{container.status.toUpperCase()}</span></div>
     <div className="container-meta"><span>⌖ {container.endpoint}:{container.listen_port}/{container.transport}</span><span>▦ {container.subnet}</span><span>DNS {container.dns}</span><span>MTU {container.mtu}</span></div>
     {container.protocol === 'amnezia-awg' && <div className="awg-summary"><span>AWG {awg.version ?? '—'}</span><span>Jc {awg.jc ?? '—'}</span><span>Junk {awg.jmin ?? '—'}–{awg.jmax ?? '—'} B</span><span>Headers {[awg.h1,awg.h2,awg.h3,awg.h4].filter(Boolean).length}/4</span></div>}
     {container.protocol === 'amnezia-awg' && awg.version === '3.1' && <div className="server-key-row"><small>HEADER PROTECTION</small>{container.awg_header_protection_key_configured ? <span className="status-enabled">● Ключ создан · зашифрован</span> : [awg.s1,awg.s2,awg.s3,awg.s4].every(value => typeof value === 'number' && value >= 12) ? <button className="secondary compact" onClick={onProvisionHeaderKey}>＋ Создать HeaderProtectionKey</button> : <span className="muted">Для ключа установи S1–S4 ≥ 12 и сохрани профиль</span>}</div>}
     {(container.protocol === 'amnezia-awg' || container.protocol === 'wireguard') && <div className="server-key-row">{container.wireguard_server_public_key ? <><small>SERVER PUBLIC KEY</small><code title={container.wireguard_server_public_key}>{container.wireguard_server_public_key.slice(0, 22)}…</code><button className="text-action" onClick={() => void navigator.clipboard.writeText(container.wireguard_server_public_key!)}>Копировать</button></> : <><small>SERVER KEY NOT PROVISIONED</small><button className="secondary compact" onClick={onProvisionKey}>＋ Создать ключ сервера</button></>}</div>}
-    <div className="container-bottom"><span>{related.length} устройств · ревизия {container.revision}</span><div className="card-actions">{(container.protocol === 'amnezia-awg' || container.protocol === 'wireguard') && container.wireguard_server_public_key && <a className="text-action" href={`/api/containers/${container.id}/server-config`} download="server.conf">Скачать server.conf</a>}{container.protocol === 'amnezia-awg' && <button className="secondary compact" onClick={onEdit}>Настроить AWG</button>}<button className="secondary compact" disabled={(container.protocol === 'amnezia-awg' || container.protocol === 'wireguard') && !container.wireguard_server_public_key} onClick={onAdd}>＋ Добавить устройство</button></div></div>
+    <div className="container-bottom"><span>{related.length} устройств · ревизия {container.revision}</span><div className="card-actions">{(container.protocol === 'amnezia-awg' || container.protocol === 'wireguard') && container.wireguard_server_public_key && <a className="text-action" href={`/api/containers/${container.id}/server-config`} download="server.conf">Скачать server.conf</a>}{runtimeCanManage && (container.protocol === 'amnezia-awg' || container.protocol === 'wireguard') && (container.status === 'running' || container.status === 'error') ? <button className="danger compact" onClick={onStop}>Остановить VPN</button> : runtimeCanManage && (container.protocol === 'amnezia-awg' || container.protocol === 'wireguard') && container.status !== 'starting' && container.status !== 'stopping' ? <button className="primary compact" disabled={!container.wireguard_server_public_key} onClick={onStart}>Запустить VPN</button> : null}{container.protocol === 'amnezia-awg' && <button className="secondary compact" onClick={onEdit}>Настроить AWG</button>}<button className="secondary compact" disabled={(container.protocol === 'amnezia-awg' || container.protocol === 'wireguard') && !container.wireguard_server_public_key} onClick={onAdd}>＋ Добавить устройство</button></div></div>
   </article>;
 }
 
