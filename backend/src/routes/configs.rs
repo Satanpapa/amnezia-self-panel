@@ -20,7 +20,7 @@ use crate::{
         render_client_config, render_server_config, ClientConfigInput, ConfigPeer,
         ServerConfigInput,
     },
-    runtime::amnezia_uri::encode_vpn_uri,
+    runtime::amnezia_uri::{encode_qr_svg, encode_vpn_uri},
     security::{
         session::hash_session_token,
         wireguard_keys::{
@@ -43,6 +43,27 @@ fn active_at_now(enabled: bool, expires_at: Option<String>) -> Result<bool, Stat
     let expires = DateTime::parse_from_rfc3339(&expires_at)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(expires.with_timezone(&Utc) > Utc::now())
+}
+
+fn qr_svg_response(mut svg: Zeroizing<String>) -> Response<Body> {
+    let body = Body::from(mem::take(&mut *svg));
+    let mut response = Response::new(body);
+    *response.status_mut() = StatusCode::OK;
+    let headers = response.headers_mut();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("image/svg+xml; charset=utf-8"));
+    headers.insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache, must-revalidate, max-age=0"),
+    );
+    headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
+    headers.insert(CONTENT_DISPOSITION, HeaderValue::from_static("inline; filename=\"client-qr.svg\""));
+    headers.insert("X-Content-Type-Options", HeaderValue::from_static("nosniff"));
+    headers.insert(
+        "Content-Security-Policy",
+        HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'; sandbox"),
+    );
+    headers.insert("X-Amnezia-Config-Status", HeaderValue::from_static("vpn-uri-qr"));
+    response
 }
 
 fn vpn_uri_response(mut uri: Zeroizing<String>) -> Response<Body> {
@@ -498,9 +519,71 @@ pub async fn subscription_vpn_uri(
     Ok(vpn_uri_response(uri))
 }
 
+/// Display an admin-authenticated QR code containing the client vpn:// profile.
+pub async fn client_vpn_uri_qr(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(client_id): Path<String>,
+) -> Result<Response<Body>, (StatusCode, &'static str)> {
+    let (admin_id, _) = authenticated_admin(&state, &jar).await
+        .map_err(|status| (status, "Authentication required"))?;
+    let (config, container_id) = build_client_config(&state, &client_id).await?;
+    let uri = encode_vpn_uri(config.as_bytes())
+        .map_err(|message| (StatusCode::UNPROCESSABLE_ENTITY, message))?;
+    let svg = encode_qr_svg(&uri)
+        .map_err(|message| (StatusCode::UNPROCESSABLE_ENTITY, message))?;
+
+    let details = serde_json::json!({
+        "client_id": client_id,
+        "container_id": container_id,
+        "format": "vpn-uri-qr",
+        "kind": "client"
+    }).to_string();
+    sqlx::query(
+        "INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'config.client.vpn_uri_qr_exported', ?)"
+    ).bind(admin_id).bind(details).execute(&state.pool).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not audit client QR export"))?;
+
+    Ok(qr_svg_response(svg))
+}
+
+/// Bearer-token QR code endpoint. The token is read only from Authorization.
+pub async fn subscription_vpn_uri_qr(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, (StatusCode, &'static str)> {
+    let token = subscription_bearer_token(&headers)
+        .map_err(|_| (StatusCode::UNAUTHORIZED, "A valid subscription bearer token is required"))?;
+    let token_hash = hash_session_token(token);
+    let client_id: String = sqlx::query_scalar(
+        "SELECT id FROM clients WHERE subscription_token_hash = ?"
+    ).bind(token_hash).fetch_optional(&state.pool).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?
+        .ok_or((StatusCode::UNAUTHORIZED, "Subscription token is invalid"))?;
+
+    let (config, container_id) = build_client_config(&state, &client_id).await?;
+    let uri = encode_vpn_uri(config.as_bytes())
+        .map_err(|message| (StatusCode::UNPROCESSABLE_ENTITY, message))?;
+    let svg = encode_qr_svg(&uri)
+        .map_err(|message| (StatusCode::UNPROCESSABLE_ENTITY, message))?;
+
+    let details = serde_json::json!({
+        "client_id": client_id,
+        "container_id": container_id,
+        "format": "vpn-uri-qr",
+        "kind": "subscription"
+    }).to_string();
+    sqlx::query(
+        "INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (NULL, 'config.client.subscription_vpn_uri_qr_exported', ?)"
+    ).bind(details).execute(&state.pool).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not audit subscription QR export"))?;
+
+    Ok(qr_svg_response(svg))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{active_at_now, config_response, subscription_bearer_token, vpn_uri_response};
+    use super::{active_at_now, config_response, qr_svg_response, subscription_bearer_token, vpn_uri_response};
     use axum::http::{
         header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, PRAGMA, AUTHORIZATION},
         HeaderMap, StatusCode,
@@ -549,6 +632,22 @@ mod tests {
             headers.insert(AUTHORIZATION, invalid.parse().unwrap());
             assert_eq!(subscription_bearer_token(&headers), Err(StatusCode::UNAUTHORIZED));
         }
+    }
+
+    #[test]
+    fn qr_responses_are_no_store_inline_svg_with_safe_content_security_policy() {
+        let response = qr_svg_response(Zeroizing::new("<svg><path d=\"M0 0\"/></svg>".to_string()));
+        let headers = response.headers();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(headers.get(CONTENT_TYPE).unwrap(), "image/svg+xml; charset=utf-8");
+        assert_eq!(headers.get(CACHE_CONTROL).unwrap(), "no-store, no-cache, must-revalidate, max-age=0");
+        assert_eq!(headers.get(CONTENT_DISPOSITION).unwrap(), "inline; filename=\"client-qr.svg\"");
+        assert_eq!(headers.get("X-Content-Type-Options").unwrap(), "nosniff");
+        assert_eq!(
+            headers.get("Content-Security-Policy").unwrap(),
+            "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+        );
+        assert_eq!(headers.get("X-Amnezia-Config-Status").unwrap(), "vpn-uri-qr");
     }
 
     #[test]
