@@ -351,7 +351,7 @@ function App() {
     if (!window.confirm('Сгенерировать новый PSK? Старый client.conf перестанет работать. После ротации скачай новый client.conf, запусти VPN-профиль и импортируй его на устройстве. Продолжить?')) return;
     setActionBusy(true); setError('');
     try {
-      await api(\`/api/clients/\${clientId}/preshared-key/rotate\`, { method: 'POST', body: '{}' });
+      await api(`/api/clients/${clientId}/preshared-key/rotate`, { method: 'POST', body: '{}' });
       await loadWorkspace();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Не удалось обновить PSK клиента');
