@@ -89,6 +89,7 @@ pub trait RuntimeAdapter: Send + Sync {
         _interface_name: &str,
         _public_key: &str,
         _allowed_ip: &str,
+        _preshared_key: Option<Zeroizing<[u8; 32]>>,
     ) -> Result<(), &'static str> {
         Err("This runtime does not support live peer addition")
     }
@@ -208,6 +209,16 @@ fn validate_peer_allowed_ip(allowed_ip: &str) -> Result<(), &'static str> {
         return Err("Live peer addition requires one host IPv4 address (/32)");
     }
     Ok(())
+}
+
+struct TemporarySecretFile {
+    path: PathBuf,
+}
+
+impl Drop for TemporarySecretFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 /// Linux host runtime. Mutating operations require an explicit environment opt-in.
@@ -396,12 +407,42 @@ impl HostRuntime {
         parse_peer_dump(dump)
     }
 
+    fn write_temporary_preshared_key(
+        &self,
+        interface_name: &str,
+        secret: &[u8; 32],
+    ) -> Result<TemporarySecretFile, &'static str> {
+        let config_path = self.config_path(interface_name)?;
+        let directory = config_path.parent()
+            .ok_or("Could not resolve protected VPN config directory")?;
+        let path = directory.join(format!(".{interface_name}-psk-{}.key", uuid::Uuid::new_v4()));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&path)
+            .map_err(|_| "Could not create protected temporary preshared-key file")?;
+        let encoded = Zeroizing::new(base64::engine::general_purpose::STANDARD.encode(secret));
+        if file.write_all(encoded.as_bytes()).is_err()
+            || file.write_all(b"\\n").is_err()
+            || file.sync_all().is_err()
+        {
+            let _ = fs::remove_file(&path);
+            return Err("Could not persist protected temporary preshared-key file");
+        }
+        Ok(TemporarySecretFile { path })
+    }
+
     async fn add_peer_to_interface(
         &self,
         protocol: &str,
         interface_name: &str,
         public_key: &str,
         allowed_ip: &str,
+        preshared_key: Option<Zeroizing<[u8; 32]>>,
     ) -> Result<(), &'static str> {
         if !self.allow_mutations {
             return Err("Host mutations are disabled; set HOST_RUNTIME_ALLOW_MUTATIONS=true");
@@ -427,7 +468,16 @@ impl HostRuntime {
             .env_clear()
             .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
             .env("LANG", "C")
-            .args(["set", interface_name, "peer", public_key, "allowed-ips", allowed_ip])
+            .args(["set", interface_name, "peer", public_key]);
+        let _preshared_key_file = if let Some(secret) = preshared_key.as_deref() {
+            let secret_file = self.write_temporary_preshared_key(interface_name, secret)?;
+            command.args(["preshared-key"]).arg(&secret_file.path);
+            Some(secret_file)
+        } else {
+            None
+        };
+        command
+            .args(["allowed-ips", allowed_ip])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -888,8 +938,9 @@ impl RuntimeAdapter for HostRuntime {
         interface_name: &str,
         public_key: &str,
         allowed_ip: &str,
+        preshared_key: Option<Zeroizing<[u8; 32]>>,
     ) -> Result<(), &'static str> {
-        self.add_peer_to_interface(protocol, interface_name, public_key, allowed_ip).await
+        self.add_peer_to_interface(protocol, interface_name, public_key, allowed_ip, preshared_key).await
     }
 }
 
