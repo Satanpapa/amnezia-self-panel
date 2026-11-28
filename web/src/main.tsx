@@ -310,11 +310,11 @@ function App() {
       const response = await fetch(format === 'vpn' ? '/api/subscriptions/vpn-uri' : '/api/subscriptions/config', {
         method: 'GET',
         credentials: 'omit',
-        headers: { Authorization: \`Bearer \${issuedToken}\` },
+        headers: { Authorization: 'Bearer ' + issuedToken },
       });
       if (!response.ok) {
         const body = await response.text();
-        let message = body || \`HTTP \${response.status}\`;
+        let message = body || ('HTTP ' + response.status);
         try { const parsed = JSON.parse(body); message = parsed.error ?? parsed.message ?? message; } catch {}
         throw new Error(message);
       }
