@@ -77,8 +77,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/containers/{container_id}/wireguard-server-key", axum::routing::post(containers::provision_wireguard_server_key))
         .route("/api/containers/{container_id}/awg-header-protection-key", axum::routing::post(containers::provision_awg_header_protection_key))
         .route("/api/containers/{container_id}/clients", axum::routing::post(clients::create))
+        .route("/api/containers/{container_id}/server-config", get(configs::server_config))
         .route("/api/clients", get(clients::list))
         .route("/api/clients/{client_id}/disable", axum::routing::post(clients::disable))
+        .route("/api/clients/{client_id}/config", get(configs::client_config))
         .with_state(state)
         .layer(RequestBodyLimitLayer::new(16 * 1024))
         .layer(CorsLayer::new().allow_origin([
