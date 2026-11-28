@@ -11,7 +11,7 @@ type AwgSettings = {
   version: string; jc?: number; jmin?: number; jmax?: number; s1?: number; s2?: number;
   s3?: number; s4?: number; h1?: string; h2?: string; h3?: string; h4?: string;
   i1?: string; i2?: string; i3?: string; i4?: string; i5?: string;
-  content_padding_addition?: number; random_trailers?: boolean; disable_cookies?: boolean;
+  content_padding_addition?: number | string; random_trailers?: boolean; disable_cookies?: boolean;
 };
 type Container = {
   id: string; name: string; protocol: string; status: string; endpoint: string;
@@ -136,7 +136,12 @@ function App() {
       s1: numeric(awgDraft.s1), s2: numeric(awgDraft.s2), s3: numeric(awgDraft.s3), s4: numeric(awgDraft.s4),
       h1: text(awgDraft.h1), h2: text(awgDraft.h2), h3: text(awgDraft.h3), h4: text(awgDraft.h4),
       i1: text(awgDraft.i1), i2: text(awgDraft.i2), i3: text(awgDraft.i3), i4: text(awgDraft.i4), i5: text(awgDraft.i5),
-      content_padding_addition: awgDraft.version === '3.1' ? numeric(awgDraft.content_padding_addition) : undefined,
+      content_padding_addition: awgDraft.version === '3.1'
+        ? (awgDraft.content_padding_addition.trim() === '' ? undefined
+          : (/^\\d+$/.test(awgDraft.content_padding_addition.trim())
+            ? Number(awgDraft.content_padding_addition.trim())
+            : awgDraft.content_padding_addition.trim()))
+        : undefined,
       random_trailers: awgDraft.version === '3.1' && awgDraft.random_trailers,
       disable_cookies: awgDraft.version === '3.1' && awgDraft.disable_cookies,
     };
@@ -328,7 +333,7 @@ function App() {
               {(['i1','i2','i3','i4','i5'] as const).map((key, index) => <label key={key}>I{index + 1} · signature<input value={awgDraft[key]} onChange={e => setAwgDraft({...awgDraft,[key]:e.target.value})} placeholder="<r 128> или <b 0x...>" /></label>)}
               {awgDraft.version === '3.1' && <>
                 <div className="form-section-title">05 / TRANSPORT PROTECTION · 3.1</div>
-                <label>ContentPaddingAddition<input type="number" min="0" value={awgDraft.content_padding_addition} onChange={e => setAwgDraft({...awgDraft,content_padding_addition:e.target.value})} placeholder="По умолчанию" /></label>
+                <label>ContentPaddingAddition<input type="text" inputMode="numeric" value={awgDraft.content_padding_addition} onChange={e => setAwgDraft({...awgDraft,content_padding_addition:e.target.value})} placeholder="Число или диапазон, например 16-32" /></label>
                 <label className="check-label"><input type="checkbox" checked={awgDraft.random_trailers} onChange={e => setAwgDraft({...awgDraft,random_trailers:e.target.checked})} /> RandomTrailers</label>
                 <label className="check-label"><input type="checkbox" checked={awgDraft.disable_cookies} onChange={e => setAwgDraft({...awgDraft,disable_cookies:e.target.checked})} /> DisableCookies</label>
               </>}
