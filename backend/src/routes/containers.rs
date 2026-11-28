@@ -1,4 +1,4 @@
-use std::{collections::HashSet, net::IpAddr, str::FromStr};
+use std::{net::IpAddr, str::FromStr};
 
 use axum::{extract::State, http::StatusCode, Json};
 use axum_extra::extract::cookie::CookieJar;
@@ -700,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn validates_awg31_content_padding_uint32_and_ranges() {
+    fn validates_awg31_content_padding_compatible_with_current_tools() {
         for value in [
             AwgPaddingRange::Number(u16::MAX as u32),
             AwgPaddingRange::Range("16".into()),
