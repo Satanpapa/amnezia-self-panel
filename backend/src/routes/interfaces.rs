@@ -626,7 +626,7 @@ async fn reap_profile_expired_peers(
     }
 
     let revoked_count = revoked_clients.len();
-    let revision_increment = i64::from(revoked_count > 0);
+    let revision_increment = if revoked_count > 0 { 1_i64 } else { 0_i64 };
     let updated = sqlx::query(
         "UPDATE protocol_containers SET revision = revision + ?, runtime_operation = NULL WHERE id = ? AND status = 'running' AND runtime_operation = 'start'"
     ).bind(revision_increment).bind(profile_id).execute(&mut *tx).await
@@ -657,7 +657,7 @@ async fn reap_profile_expired_peers(
 #[cfg(test)]
 mod expiry_reaper_tests {
     use std::{
-        collections::HashSet,
+        collections::{HashMap, HashSet},
         sync::{Arc, Mutex},
     };
 
@@ -675,6 +675,7 @@ mod expiry_reaper_tests {
 
     struct FakeHostRuntime {
         peers: Arc<Mutex<HashSet<String>>>,
+        counters: Arc<Mutex<HashMap<String, (u64, u64)>>>,
         fail_remove: bool,
     }
 
@@ -704,12 +705,16 @@ mod expiry_reaper_tests {
             _interface_name: &str,
         ) -> Result<Vec<PeerRuntimeStat>, &'static str> {
             let peers = self.peers.lock().unwrap().clone();
-            Ok(peers.into_iter().map(|public_key| PeerRuntimeStat {
-                public_key,
-                allowed_ips: "10.66.0.2/32".into(),
-                latest_handshake_unix: None,
-                rx_bytes: 0,
-                tx_bytes: 0,
+            let counters = self.counters.lock().unwrap().clone();
+            Ok(peers.into_iter().map(|public_key| {
+                let (rx_bytes, tx_bytes) = counters.get(&public_key).copied().unwrap_or((0, 0));
+                PeerRuntimeStat {
+                    public_key,
+                    allowed_ips: "10.66.0.2/32".into(),
+                    latest_handshake_unix: None,
+                    rx_bytes,
+                    tx_bytes,
+                }
             }).collect())
         }
 
@@ -753,6 +758,10 @@ mod expiry_reaper_tests {
                 enabled BOOLEAN NOT NULL,
                 expires_at TEXT,
                 wireguard_public_key TEXT,
+                traffic_limit_bytes INTEGER NOT NULL DEFAULT 0,
+                traffic_used_bytes INTEGER NOT NULL DEFAULT 0,
+                last_rx_bytes INTEGER NOT NULL DEFAULT 0,
+                last_tx_bytes INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )"
         ).execute(&pool).await.unwrap();
@@ -789,8 +798,13 @@ mod expiry_reaper_tests {
             expired_key.clone(),
             future_key.clone(),
         ])));
+        let counters = Arc::new(Mutex::new(HashMap::from([
+            (expired_key.clone(), (1_000_u64, 250_u64)),
+            (future_key.clone(), (100_u64, 50_u64)),
+        ])));
         let runtime = FakeHostRuntime {
             peers: peers.clone(),
+            counters,
             fail_remove,
         };
         let state = AppState {
@@ -817,7 +831,13 @@ mod expiry_reaper_tests {
             "SELECT status, runtime_operation, revision FROM protocol_containers WHERE id = 'abcdef1234'"
         ).fetch_one(&state.pool).await.unwrap();
         let audit_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM audit_events WHERE action = 'client.expired_and_revoked'"
+            "SELECT COUNT(*) FROM audit_events WHERE action = 'client.policy_enforced'"
+        ).fetch_one(&state.pool).await.unwrap();
+        let (expired_usage, expired_rx, expired_tx): (i64, i64, i64) = sqlx::query_as(
+            "SELECT traffic_used_bytes, last_rx_bytes, last_tx_bytes FROM clients WHERE id = 'expired-client'"
+        ).fetch_one(&state.pool).await.unwrap();
+        let (future_usage, future_rx, future_tx): (i64, i64, i64) = sqlx::query_as(
+            "SELECT traffic_used_bytes, last_rx_bytes, last_tx_bytes FROM clients WHERE id = 'future-client'"
         ).fetch_one(&state.pool).await.unwrap();
 
         assert!(!expired_enabled);
@@ -826,9 +846,50 @@ mod expiry_reaper_tests {
         assert!(operation.is_none());
         assert_eq!(revision, 2);
         assert_eq!(audit_count, 1);
+        assert_eq!((expired_usage, expired_rx, expired_tx), (1_250, 1_000, 250));
+        assert_eq!((future_usage, future_rx, future_tx), (150, 100, 50));
         let remaining = peers.lock().unwrap();
         assert!(!remaining.contains(&expired_key));
         assert!(remaining.contains(&future_key));
+    }
+
+
+    #[tokio::test]
+    async fn revokes_client_when_cumulative_rx_plus_tx_reaches_traffic_limit() {
+        let (state, peers, _expired_key, future_key) = test_state(false).await;
+        let future_expiry = (Utc::now() + ChronoDuration::days(1)).to_rfc3339();
+        sqlx::query(
+            "UPDATE clients SET expires_at = ?, traffic_limit_bytes = 1_250 WHERE id = 'expired-client'"
+        ).bind(&future_expiry).execute(&state.pool).await.unwrap();
+        sqlx::query(
+            "UPDATE clients SET traffic_limit_bytes = 150 WHERE id = 'future-client'"
+        ).execute(&state.pool).await.unwrap();
+
+        assert_eq!(reap_expired_peers_once(&state).await, 2);
+        let (expired_enabled, future_enabled): (bool, bool) = sqlx::query_as(
+            "SELECT
+                (SELECT enabled FROM clients WHERE id = 'expired-client'),
+                (SELECT enabled FROM clients WHERE id = 'future-client')"
+        ).fetch_one(&state.pool).await.unwrap();
+        let future_usage: i64 = sqlx::query_scalar(
+            "SELECT traffic_used_bytes FROM clients WHERE id = 'future-client'"
+        ).fetch_one(&state.pool).await.unwrap();
+        let revoked_reasons: String = sqlx::query_scalar(
+            "SELECT details_json FROM audit_events WHERE action = 'client.policy_enforced'"
+        ).fetch_one(&state.pool).await.unwrap();
+
+        assert!(!expired_enabled);
+        assert!(!future_enabled);
+        assert_eq!(future_usage, 150);
+        assert!(revoked_reasons.contains("traffic_limit"));
+        assert!(!peers.lock().unwrap().contains(&future_key));
+    }
+
+    #[test]
+    fn traffic_counter_resets_do_not_underflow_and_usage_saturates() {
+        assert_eq!(super::traffic_counter_delta(900, 100), 100);
+        assert_eq!(super::traffic_counter_delta(50, 100), 50);
+        assert_eq!(super::accumulated_traffic(i64::MAX - 1, 1, 1), i64::MAX);
     }
 
     #[tokio::test]
