@@ -38,6 +38,8 @@ Self-hosted control plane for AmneziaWG, WireGuard, OpenVPN and OpenVPN over Clo
 - [x] Linux host prerequisite checks for root, `CAP_NET_ADMIN`, TUN/kernel modules and root-owned `ip`, `wg`, `awg`, `wg-quick`, `awg-quick` / userspace daemons.
 - [x] Opt-in Linux host interface start/stop through fixed `wg-quick` / `awg-quick` argv (no shell), protected `0700` config directory and `0600` files.
 - [x] Authenticated server start/stop API and dashboard controls, with a separate DB runtime-operation lock and audit events.
+- [x] Startup recovery marks interrupted start/stop operations as requiring cleanup; host stop is idempotent when the interface/config have already disappeared.
+- [x] Read-only live peer stats from `wg/awg show <interface> dump`, with public keys/IPs/handshake/RX/TX only; endpoint and preshared-key columns are discarded.
 - [x] Client creation/revocation, AWG profile edits and key provisioning are blocked while the interface is active; peer changes and profile revision increments are committed atomically while stopped.
 - [x] Authenticated one-time `POST /api/containers/:id/awg-header-protection-key` endpoint and dashboard status/button.
 - [ ] Docker container create/start/stop/remove lifecycle.
@@ -87,6 +89,7 @@ Open the Vite URL (normally http://127.0.0.1:5173). The dev server proxies `/api
 - `POST /api/containers/:container_id/clients`
 - `POST /api/containers/:container_id/start` (host runtime only; builds config and starts the WG/AWG interface)
 - `POST /api/containers/:container_id/stop` (host runtime only; stops a managed WG/AWG interface)
+- `GET /api/containers/:container_id/peer-stats` (authenticated, read-only; live peer handshake and RX/TX counters)
 - `GET /api/containers/:container_id/server-config` (authenticated server `.conf` draft; includes active, unexpired peers)
 - `GET /api/clients/:client_id/config` (authenticated `.conf` draft; denied for disabled or expired clients)
 
@@ -105,7 +108,7 @@ The initial admin password must be 12-256 characters. Usernames are 3-32 ASCII l
 - Use HTTPS in production; do not expose the development server directly to the Internet.
 - The initial version does not yet include login rate limiting, full CSRF defenses, password reset or multi-user roles.
 - Preview remains the safe default. In opt-in Linux host mode, authenticated start/stop operations can create/remove a real WireGuard/AmneziaWG interface through the official quick tools. The server configuration is generated from currently enabled and unexpired clients at start time. Client creation and revocation are rejected while the interface is running; stop the profile, change the peer list, then start it again. Expiration is checked when configs are generated and at interface start, but there is no background expiry worker yet, so a client that expires while a tunnel is already running is not automatically removed until the interface is stopped and started. Authenticated `.conf` downloads still carry a draft marker and do not configure NAT/forwarding, firewall policy, IPv6 routing or automatic startup/recovery.
-- Curve25519 keypair generation and authenticated encryption at rest are implemented. AWG 3.1 HeaderProtectionKey is stored separately and encrypted at rest. The authenticated decryption primitive and authorized client `.conf` export endpoint are implemented with zeroizing plaintext buffers. Live peer installation/revocation and hot profile reload are not implemented; peer changes are applied by a full interface stop/start. The initial enabled peers are installed as part of interface startup. `vpn://` serialization and Docker container lifecycle are not implemented yet. Client `.conf` uses split-tunnel routing for the VPN profile's IPv4 subnet only. Full-tunnel Internet routing, IPv6, firewall policy, forwarding and NAT must be implemented before this can act as a full Internet VPN.
+- Curve25519 keypair generation and authenticated encryption at rest are implemented. AWG 3.1 HeaderProtectionKey is stored separately and encrypted at rest. The authenticated decryption primitive and authorized client `.conf` export endpoint are implemented with zeroizing plaintext buffers. Live peer installation/revocation and hot profile reload are not implemented; peer changes are applied by a full interface stop/start. The initial enabled peers are installed as part of interface startup. The authenticated peer-stats endpoint reads the fixed `wg/awg show <interface> dump` format and discards peer endpoint and preshared-key columns before constructing its response. Startup recovery clears stale operation locks and marks affected profiles for explicit cleanup; stopping an already-absent interface is safe when its protected config is also absent. `vpn://` serialization and Docker container lifecycle are not implemented yet. Client `.conf` uses split-tunnel routing for the VPN profile's IPv4 subnet only. Full-tunnel Internet routing, IPv6, firewall policy, forwarding and NAT must be implemented before this can act as a full Internet VPN.
 
 ## Runtime architecture
 
