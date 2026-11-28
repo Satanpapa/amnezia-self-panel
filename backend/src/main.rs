@@ -109,6 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/clients", get(clients::list))
         .route("/api/clients/{client_id}/disable", axum::routing::post(clients::disable))
         .route("/api/clients/{client_id}/config", get(configs::client_config))
+        .route("/api/subscriptions/config", get(configs::subscription_config))
         .with_state(state)
         .layer(RequestBodyLimitLayer::new(16 * 1024))
         .layer(CorsLayer::new().allow_origin([
