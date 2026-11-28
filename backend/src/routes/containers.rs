@@ -215,13 +215,12 @@ fn validate_cps_signature(signature: &str) -> Result<(), &'static str> {
         let parts: Vec<&str> = tag.split_ascii_whitespace().collect();
         match parts.as_slice() {
             ["t"] => {}
-            [kind @ ("r" | "rd" | "rc"), size] => {
+            ["r" | "rd" | "rc", size] => {
                 let size = size.parse::<u16>()
                     .map_err(|_| "I1-I5 random tag size must be an integer from 1 to 1024")?;
                 if size == 0 || size > 1024 {
                     return Err("I1-I5 random tag size must be from 1 to 1024");
                 }
-                let _ = kind;
             }
             ["b", bytes] => {
                 let hex = bytes.strip_prefix("0x")
@@ -593,7 +592,7 @@ mod tests {
         assert!(validate_endpoint("192.0.2.10"));
         assert!(validate_endpoint("2001:db8::1"));
         assert!(validate_endpoint("[2001:db8::1]"));
-        assert!(!validate_endpoint("vpn.example.com\\nAddress=0.0.0.0/0"));
+        assert!(!validate_endpoint("vpn.example.com\nAddress=0.0.0.0/0"));
         assert!(!validate_endpoint("vpn;touch /tmp/pwned"));
         assert!(!validate_endpoint("bad host.example"));
         assert!(!validate_endpoint("-bad.example"));
@@ -604,13 +603,13 @@ mod tests {
         assert!(validate_dns_servers("1.1.1.1"));
         assert!(validate_dns_servers("1.1.1.1, 8.8.8.8"));
         assert!(validate_dns_servers("2606:4700:4700::1111"));
-        assert!(!validate_dns_servers("1.1.1.1\\nPrivateKey=bad"));
+        assert!(!validate_dns_servers("1.1.1.1\nPrivateKey=bad"));
         assert!(!validate_dns_servers("dns.example.com"));
         assert!(!validate_dns_servers("1.1.1.1,"));
     }
 
     #[test]
-    fn rejects_endpoint_injection_and_accepts_ip_or_hostname() {
+    fn enforces_protocol_transport_compatibility() {
         assert!(validate_transport("amnezia-awg", "udp").is_ok());
         assert!(validate_transport("wireguard", "udp").is_ok());
         assert!(validate_transport("openvpn", "tcp").is_ok());
@@ -735,7 +734,7 @@ mod tests {
     fn rejects_malformed_cps_signature_tags() {
         for malformed in [
             "not-a-tag",
-            "<r 4>\\nPrivateKey=bad<r 4>",
+            "<r 4>\nPrivateKey=bad<r 4>",
             "<unknown 4>",
             "<r 0>",
             "<b 0x1>",
