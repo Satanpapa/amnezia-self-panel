@@ -453,6 +453,105 @@ pub async fn rotate_subscription_token(
     }))
 }
 
+pub async fn provision_client_preshared_key(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(client_id): Path<String>,
+) -> Result<Json<ClientRecord>, (StatusCode, &'static str)> {
+    let (admin_id, _) = authenticated_admin(&state, &jar).await
+        .map_err(|status| (status, "Authentication required"))?;
+    let master_key = state.wireguard_master_key.as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Set WIREGUARD_MASTER_KEY before provisioning peer preshared keys"))?;
+
+    let row = sqlx::query(
+        "SELECT c.container_id, c.enabled, c.expires_at, c.wireguard_public_key, c.wireguard_preshared_key_encrypted, p.protocol, p.status, p.runtime_operation FROM clients c JOIN protocol_containers p ON p.id = c.container_id WHERE c.id = ?"
+    ).bind(&client_id).fetch_optional(&state.pool).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?
+        .ok_or((StatusCode::NOT_FOUND, "Client not found"))?;
+
+    let enabled: bool = sqlx::Row::try_get(&row, "enabled")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid client state"))?;
+    if !enabled {
+        return Err((StatusCode::CONFLICT, "Enable the client before provisioning a preshared key"));
+    }
+    let expires_at: Option<String> = sqlx::Row::try_get(&row, "expires_at")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid client expiry"))?;
+    if let Some(value) = &expires_at {
+        let expiry = chrono::DateTime::parse_from_rfc3339(value)
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Client expiry timestamp is invalid"))?;
+        if expiry.with_timezone(&chrono::Utc) <= chrono::Utc::now() {
+            return Err((StatusCode::GONE, "Client access has expired"));
+        }
+    }
+
+    let protocol: String = sqlx::Row::try_get(&row, "protocol")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid client protocol"))?;
+    if protocol != "wireguard" && protocol != "amnezia-awg" {
+        return Err((StatusCode::BAD_REQUEST, "Peer preshared keys are supported only for WireGuard and AmneziaWG"));
+    }
+    let profile_status: String = sqlx::Row::try_get(&row, "status")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid VPN profile state"))?;
+    let runtime_operation: Option<String> = sqlx::Row::try_get(&row, "runtime_operation")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid VPN runtime operation"))?;
+    if !profile_is_stopped(&profile_status, runtime_operation.as_deref()) {
+        return Err((StatusCode::CONFLICT, "Stop the VPN profile before provisioning a preshared key; it will be applied on the next start"));
+    }
+    let existing: Option<Vec<u8>> = sqlx::Row::try_get(&row, "wireguard_preshared_key_encrypted")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid stored client preshared key"))?;
+    if existing.is_some() {
+        return Err((StatusCode::CONFLICT, "This client already has a preshared key"));
+    }
+    let public_key: Option<String> = sqlx::Row::try_get(&row, "wireguard_public_key")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid client public key"))?;
+    if public_key.is_none() {
+        return Err((StatusCode::CONFLICT, "Client public key is missing"));
+    }
+    let container_id: String = sqlx::Row::try_get(&row, "container_id")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid container reference"))?;
+
+    let secret = crate::security::wireguard_keys::generate_peer_preshared_key();
+    let encrypted = crate::security::wireguard_keys::encrypt_peer_preshared_key(master_key, &secret)
+        .map_err(|message| (StatusCode::INTERNAL_SERVER_ERROR, message))?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut tx = state.pool.begin().await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not begin peer preshared-key provisioning"))?;
+
+    let updated = sqlx::query(
+        "UPDATE clients SET wireguard_preshared_key_encrypted = ? WHERE id = ? AND enabled = 1 AND wireguard_preshared_key_encrypted IS NULL AND expires_at IS ? AND (expires_at IS NULL OR julianday(expires_at) > julianday(?)) AND EXISTS (SELECT 1 FROM protocol_containers WHERE id = ? AND status IN ('preview', 'stopped') AND runtime_operation IS NULL)"
+    ).bind(&encrypted).bind(&client_id).bind(&expires_at).bind(&now).bind(&container_id)
+        .execute(&mut *tx).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not store client preshared key"))?;
+    if updated.rows_affected() != 1 {
+        return Err((StatusCode::CONFLICT, "Client or VPN profile changed while provisioning the preshared key; refresh and retry"));
+    }
+
+    let revision = sqlx::query(
+        "UPDATE protocol_containers SET revision = revision + 1 WHERE id = ? AND status IN ('preview', 'stopped') AND runtime_operation IS NULL"
+    ).bind(&container_id).execute(&mut *tx).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not advance VPN profile revision"))?;
+    if revision.rows_affected() != 1 {
+        return Err((StatusCode::CONFLICT, "VPN profile state changed while provisioning the preshared key"));
+    }
+    let details = serde_json::json!({
+        "client_id": client_id,
+        "container_id": container_id,
+        "algorithm": "wireguard-preshared-key",
+        "secret_returned": false
+    }).to_string();
+    sqlx::query(
+        "INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'client.preshared_key.provisioned', ?)"
+    ).bind(admin_id).bind(details).execute(&mut *tx).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not audit client preshared-key provisioning"))?;
+    tx.commit().await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not commit client preshared-key provisioning"))?;
+
+    let item = sqlx::query_as::<_, ClientRecord>(
+        "SELECT id, container_id, name, note, assigned_ip, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, wireguard_public_key, (wireguard_preshared_key_encrypted IS NOT NULL) AS wireguard_preshared_key_configured FROM clients WHERE id = ?"
+    ).bind(&client_id).fetch_one(&state.pool).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read updated client"))?;
+    Ok(Json(item))
+}
+
 pub async fn disable(
     State(state): State<AppState>,
     jar: CookieJar,
