@@ -395,45 +395,94 @@ pub async fn disable(
         return Err((StatusCode::CONFLICT, "A VPN runtime operation is in progress; retry after it finishes"));
     }
 
-    let mut runtime_applied = false;
-    if profile_status == "running" {
+    let runtime_applied = if profile_status == "running" {
+        if protocol != "wireguard" && protocol != "amnezia-awg" {
+            return Err((StatusCode::CONFLICT, "Live revocation supports only WireGuard and AmneziaWG"));
+        }
+        let runtime_status = state.runtime.status().await;
+        if runtime_status.mode != "host" || !runtime_status.can_manage_vpn {
+            return Err((StatusCode::SERVICE_UNAVAILABLE, "Live peer changes require an explicitly enabled Linux host runtime"));
+        }
         let public_key: Option<String> = sqlx::Row::try_get(&existing, "wireguard_public_key")
             .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
         let public_key = public_key
             .ok_or((StatusCode::CONFLICT, "This running client has no WireGuard public key"))?;
         let interface_name = crate::runtime::interface_name_for_profile(&protocol, &container_id)
             .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
-        state.runtime.remove_peer(&protocol, &interface_name, &public_key).await
-            .map_err(|message| (StatusCode::CONFLICT, message))?;
-        runtime_applied = true;
-    } else if profile_status != "preview" && profile_status != "stopped" {
+        let claimed = sqlx::query(
+            "UPDATE protocol_containers SET runtime_operation = 'sync' WHERE id = ? AND status = 'running' AND runtime_operation IS NULL"
+        ).bind(&container_id).execute(&state.pool).await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not claim live peer revocation"))?;
+        if claimed.rows_affected() != 1 {
+            return Err((StatusCode::CONFLICT, "VPN profile state changed; refresh and retry"));
+        }
+        if let Err(message) = state.runtime.remove_peer(&protocol, &interface_name, &public_key).await {
+            let _ = sqlx::query(
+                "UPDATE protocol_containers SET runtime_operation = NULL WHERE id = ? AND status = 'running' AND runtime_operation = 'sync'"
+            ).bind(&container_id).execute(&state.pool).await;
+            return Err((StatusCode::CONFLICT, message));
+        }
+        true
+    } else if profile_status == "preview" || profile_status == "stopped" {
+        false
+    } else {
         return Err((StatusCode::CONFLICT, "VPN profile is in an error state; reconcile or stop the interface before revoking this client"));
-    }
+    };
 
-    let mut tx = state.pool.begin().await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not begin client revocation"))?;
-    let result = sqlx::query(
-        "UPDATE clients SET enabled = 0 WHERE id = ? AND enabled = 1 AND EXISTS (SELECT 1 FROM protocol_containers WHERE id = ? AND runtime_operation IS NULL AND status IN ('preview', 'stopped', 'running'))"
-    )
-    .bind(&client_id).bind(&container_id).execute(&mut *tx).await
-    .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not disable client"))?;
-    if result.rows_affected() == 0 {
-        return Err((StatusCode::CONFLICT, "Client or VPN profile changed concurrently; refresh and reconcile runtime state"));
-    }
+    let transaction_result: Result<(), (StatusCode, &'static str)> = async {
+        let mut tx = state.pool.begin().await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not begin client revocation"))?;
+        let result = if runtime_applied {
+            sqlx::query(
+                "UPDATE clients SET enabled = 0 WHERE id = ? AND enabled = 1 AND EXISTS (SELECT 1 FROM protocol_containers WHERE id = ? AND status = 'running' AND runtime_operation = 'sync')"
+            ).bind(&client_id).bind(&container_id).execute(&mut *tx).await
+        } else {
+            sqlx::query(
+                "UPDATE clients SET enabled = 0 WHERE id = ? AND enabled = 1 AND EXISTS (SELECT 1 FROM protocol_containers WHERE id = ? AND status IN ('preview', 'stopped') AND runtime_operation IS NULL)"
+            ).bind(&client_id).bind(&container_id).execute(&mut *tx).await
+        }.map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not disable client"))?;
+        if result.rows_affected() != 1 {
+            return Err((StatusCode::CONFLICT, "Client or VPN profile changed concurrently; refresh and reconcile runtime state"));
+        }
 
-    sqlx::query("UPDATE protocol_containers SET revision = revision + 1 WHERE id = ?")
-        .bind(&container_id).execute(&mut *tx).await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not advance profile revision"))?;
-    let details = serde_json::json!({
-        "client_id": client_id,
-        "container_id": container_id,
-        "runtime_applied": runtime_applied
-    }).to_string();
-    sqlx::query("INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'client.disabled', ?)")
-        .bind(admin_id).bind(details).execute(&mut *tx).await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not record client revocation"))?;
-    tx.commit().await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not commit client revocation"))?;
+        let profile_update = if runtime_applied {
+            sqlx::query(
+                "UPDATE protocol_containers SET revision = revision + 1, runtime_operation = NULL WHERE id = ? AND status = 'running' AND runtime_operation = 'sync'"
+            ).bind(&container_id).execute(&mut *tx).await
+        } else {
+            sqlx::query(
+                "UPDATE protocol_containers SET revision = revision + 1 WHERE id = ? AND status IN ('preview', 'stopped') AND runtime_operation IS NULL"
+            ).bind(&container_id).execute(&mut *tx).await
+        }.map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not advance profile revision"))?;
+        if profile_update.rows_affected() != 1 {
+            return Err((StatusCode::CONFLICT, "VPN profile state changed while revoking the client"));
+        }
+
+        let details = serde_json::json!({
+            "client_id": client_id,
+            "container_id": container_id,
+            "runtime_applied": runtime_applied
+        }).to_string();
+        sqlx::query("INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'client.disabled', ?)")
+            .bind(admin_id).bind(details).execute(&mut *tx).await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not record client revocation"))?;
+        tx.commit().await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not commit client revocation"))?;
+        Ok(())
+    }.await;
+
+    if let Err(error) = transaction_result {
+        if runtime_applied {
+            // Runtime removal already happened. Keep the client revoked in the
+            // database where possible, and mark the profile for explicit cleanup.
+            let _ = sqlx::query("UPDATE clients SET enabled = 0 WHERE id = ? AND container_id = ?")
+                .bind(&client_id).bind(&container_id).execute(&state.pool).await;
+            let _ = sqlx::query(
+                "UPDATE protocol_containers SET status = 'error', revision = revision + 1, runtime_operation = NULL WHERE id = ? AND status = 'running' AND runtime_operation = 'sync'"
+            ).bind(&container_id).execute(&state.pool).await;
+        }
+        return Err(error);
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
