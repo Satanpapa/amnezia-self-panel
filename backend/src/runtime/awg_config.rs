@@ -266,6 +266,7 @@ mod tests {
             content_padding_addition: Some(AwgPaddingRange::Range("16-32".into())),
             random_trailers: true,
             disable_cookies: true,
+            ..Default::default()
         }
     }
 
