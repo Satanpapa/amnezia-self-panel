@@ -227,7 +227,9 @@ pub async fn disable(
     let (admin_id, _) = authenticated_admin(&state, &jar).await
         .map_err(|status| (status, "Authentication required"))?;
 
-    let existing = sqlx::query("SELECT container_id, enabled FROM clients WHERE id = ?")
+    let existing = sqlx::query(
+        "SELECT c.container_id, c.enabled, c.wireguard_public_key, p.protocol, p.status, p.runtime_operation FROM clients c JOIN protocol_containers p ON p.id = c.container_id WHERE c.id = ?"
+    )
         .bind(&client_id).fetch_optional(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?
         .ok_or((StatusCode::NOT_FOUND, "Client not found"))?;
@@ -238,25 +240,50 @@ pub async fn disable(
     if !enabled {
         return Ok(StatusCode::NO_CONTENT);
     }
+    let protocol: String = sqlx::Row::try_get(&existing, "protocol")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
+    let profile_status: String = sqlx::Row::try_get(&existing, "status")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
+    let runtime_operation: Option<String> = sqlx::Row::try_get(&existing, "runtime_operation")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
+    if runtime_operation.is_some() {
+        return Err((StatusCode::CONFLICT, "A VPN runtime operation is in progress; retry after it finishes"));
+    }
 
-    // A running interface contains an in-memory peer snapshot. We intentionally
-    // require a stop before revocation until protocol-safe live peer reconciliation
-    // is implemented for both WireGuard and AmneziaWG.
+    let mut runtime_applied = false;
+    if profile_status == "running" {
+        let public_key: Option<String> = sqlx::Row::try_get(&existing, "wireguard_public_key")
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
+        let public_key = public_key
+            .ok_or((StatusCode::CONFLICT, "This running client has no WireGuard public key"))?;
+        let interface_name = crate::runtime::interface_name_for_profile(&protocol, &container_id)
+            .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+        state.runtime.remove_peer(&protocol, &interface_name, &public_key).await
+            .map_err(|message| (StatusCode::CONFLICT, message))?;
+        runtime_applied = true;
+    } else if profile_status != "preview" && profile_status != "stopped" && profile_status != "error" {
+        return Err((StatusCode::CONFLICT, "VPN profile state does not allow client revocation"));
+    }
+
     let mut tx = state.pool.begin().await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not begin client revocation"))?;
     let result = sqlx::query(
-        "UPDATE clients SET enabled = 0 WHERE id = ? AND enabled = 1 AND EXISTS (SELECT 1 FROM protocol_containers WHERE id = ? AND status IN ('preview', 'stopped') AND runtime_operation IS NULL)"
+        "UPDATE clients SET enabled = 0 WHERE id = ? AND enabled = 1 AND EXISTS (SELECT 1 FROM protocol_containers WHERE id = ? AND runtime_operation IS NULL AND status IN ('preview', 'stopped', 'error', 'running'))"
     )
     .bind(&client_id).bind(&container_id).execute(&mut *tx).await
     .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not disable client"))?;
     if result.rows_affected() == 0 {
-        return Err((StatusCode::CONFLICT, "Stop the VPN profile before revoking this client; the live peer must be removed safely"));
+        return Err((StatusCode::CONFLICT, "Client or VPN profile changed concurrently; refresh and reconcile runtime state"));
     }
 
     sqlx::query("UPDATE protocol_containers SET revision = revision + 1 WHERE id = ?")
         .bind(&container_id).execute(&mut *tx).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not advance profile revision"))?;
-    let details = serde_json::json!({"client_id": client_id, "container_id": container_id, "runtime_applied": false}).to_string();
+    let details = serde_json::json!({
+        "client_id": client_id,
+        "container_id": container_id,
+        "runtime_applied": runtime_applied
+    }).to_string();
     sqlx::query("INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'client.disabled', ?)")
         .bind(admin_id).bind(details).execute(&mut *tx).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not record client revocation"))?;
