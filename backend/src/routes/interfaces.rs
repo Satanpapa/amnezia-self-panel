@@ -58,7 +58,7 @@ pub async fn start(
     let runtime_status = state.runtime.status().await;
     ensure_host_runtime(&runtime_status)?;
 
-    let row = sqlx::query("SELECT protocol, status FROM protocol_containers WHERE id = ?")
+    let row = sqlx::query("SELECT protocol, status, runtime_operation FROM protocol_containers WHERE id = ?")
         .bind(&container_id)
         .fetch_optional(&state.pool)
         .await
@@ -68,19 +68,22 @@ pub async fn start(
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid protocol profile"))?;
     let current_status: String = sqlx::Row::try_get(&row, "status")
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid protocol status"))?;
-    if current_status == "running" || current_status == "starting" || current_status == "stopping" {
-        return Err((StatusCode::CONFLICT, "VPN profile is already active or changing state"));
+    let runtime_operation: Option<String> = sqlx::Row::try_get(&row, "runtime_operation")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid runtime operation state"))?;
+    if current_status == "running" || current_status == "starting" || runtime_operation.is_some() {
+        return Err((StatusCode::CONFLICT, "VPN profile is already active or an operation is in progress"));
     }
     if protocol != "wireguard" && protocol != "amnezia-awg" {
         return Err((StatusCode::BAD_REQUEST, "Host runtime currently supports only WireGuard and AmneziaWG"));
     }
 
-    let draft = build_server_config(&state, &container_id).await?;
     let interface_name = interface_name_for_profile(&protocol, &container_id)
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not derive interface name"))?;
 
+    // Claim the profile before building its peer snapshot. Client mutations use
+    // the same runtime_operation lock and therefore cannot race interface start.
     let claimed = sqlx::query(
-        "UPDATE protocol_containers SET status = 'starting' WHERE id = ? AND status = ?"
+        "UPDATE protocol_containers SET runtime_operation = 'start' WHERE id = ? AND status = ? AND runtime_operation IS NULL"
     )
     .bind(&container_id)
     .bind(&current_status)
@@ -91,8 +94,17 @@ pub async fn start(
         return Err((StatusCode::CONFLICT, "VPN profile state changed; refresh and retry"));
     }
 
+    let draft = match build_server_config(&state, &container_id).await {
+        Ok(draft) => draft,
+        Err(error) => {
+            let _ = sqlx::query("UPDATE protocol_containers SET runtime_operation = NULL WHERE id = ? AND runtime_operation = 'start'")
+                .bind(&container_id).execute(&state.pool).await;
+            return Err(error);
+        }
+    };
+
     if let Err(message) = state.runtime.start_interface(&protocol, &interface_name, draft.config).await {
-        let _ = sqlx::query("UPDATE protocol_containers SET status = 'error' WHERE id = ? AND status = 'starting'")
+        let _ = sqlx::query("UPDATE protocol_containers SET status = 'error', runtime_operation = NULL WHERE id = ? AND runtime_operation = 'start'")
             .bind(&container_id).execute(&state.pool).await;
         let details = serde_json::json!({
             "container_id": container_id,
@@ -103,7 +115,7 @@ pub async fn start(
         return Err((StatusCode::BAD_GATEWAY, message));
     }
 
-    let updated = sqlx::query("UPDATE protocol_containers SET status = 'running' WHERE id = ? AND status = 'starting'")
+    let updated = sqlx::query("UPDATE protocol_containers SET status = 'running', runtime_operation = NULL WHERE id = ? AND runtime_operation = 'start'")
         .bind(&container_id).execute(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Interface started but database status update failed"))?;
     if updated.rows_affected() != 1 {
@@ -140,7 +152,7 @@ pub async fn stop(
     let runtime_status = state.runtime.status().await;
     ensure_host_runtime(&runtime_status)?;
 
-    let row = sqlx::query("SELECT protocol, status, revision FROM protocol_containers WHERE id = ?")
+    let row = sqlx::query("SELECT protocol, status, revision, runtime_operation FROM protocol_containers WHERE id = ?")
         .bind(&container_id)
         .fetch_optional(&state.pool)
         .await
@@ -152,6 +164,11 @@ pub async fn stop(
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid protocol status"))?;
     let revision: i64 = sqlx::Row::try_get(&row, "revision")
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid profile revision"))?;
+    let runtime_operation: Option<String> = sqlx::Row::try_get(&row, "runtime_operation")
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid runtime operation state"))?;
+    if runtime_operation.is_some() {
+        return Err((StatusCode::CONFLICT, "Another VPN runtime operation is already in progress"));
+    }
     if current_status != "running" && current_status != "error" {
         return Err((StatusCode::CONFLICT, "VPN profile is not marked as running or requiring cleanup"));
     }
@@ -162,7 +179,7 @@ pub async fn stop(
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not derive interface name"))?;
 
     let claimed = sqlx::query(
-        "UPDATE protocol_containers SET status = 'stopping' WHERE id = ? AND status = ?"
+        "UPDATE protocol_containers SET runtime_operation = 'stop' WHERE id = ? AND status = ? AND runtime_operation IS NULL"
     )
     .bind(&container_id)
     .bind(&current_status)
@@ -174,7 +191,7 @@ pub async fn stop(
     }
 
     if let Err(message) = state.runtime.stop_interface(&protocol, &interface_name).await {
-        let _ = sqlx::query("UPDATE protocol_containers SET status = 'error' WHERE id = ? AND status = 'stopping'")
+        let _ = sqlx::query("UPDATE protocol_containers SET status = 'error', runtime_operation = NULL WHERE id = ? AND runtime_operation = 'stop'")
             .bind(&container_id).execute(&state.pool).await;
         let details = serde_json::json!({
             "container_id": container_id,
@@ -185,7 +202,7 @@ pub async fn stop(
         return Err((StatusCode::BAD_GATEWAY, message));
     }
 
-    let updated = sqlx::query("UPDATE protocol_containers SET status = 'stopped' WHERE id = ? AND status = 'stopping'")
+    let updated = sqlx::query("UPDATE protocol_containers SET status = 'stopped', runtime_operation = NULL WHERE id = ? AND runtime_operation = 'stop'")
         .bind(&container_id).execute(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Interface stopped but database status update failed"))?;
     if updated.rows_affected() != 1 {
