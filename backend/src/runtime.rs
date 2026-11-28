@@ -65,6 +65,14 @@ pub trait RuntimeAdapter: Send + Sync {
     ) -> Result<Vec<PeerRuntimeStat>, &'static str> {
         Err("This runtime does not expose live peer statistics")
     }
+
+    async fn interface_is_up(
+        &self,
+        _protocol: &str,
+        _interface_name: &str,
+    ) -> Result<bool, &'static str> {
+        Err("This runtime cannot inspect Linux interfaces")
+    }
 }
 
 /// Mark interrupted runtime operations as requiring administrator cleanup.
@@ -711,6 +719,15 @@ impl RuntimeAdapter for HostRuntime {
         interface_name: &str,
     ) -> Result<Vec<PeerRuntimeStat>, &'static str> {
         self.run_peer_dump(protocol, interface_name).await
+    }
+
+    async fn interface_is_up(
+        &self,
+        protocol: &str,
+        interface_name: &str,
+    ) -> Result<bool, &'static str> {
+        Self::quick_binary(protocol)?;
+        self.interface_exists(interface_name).await
     }
 }
 
