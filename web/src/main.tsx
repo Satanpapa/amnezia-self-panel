@@ -17,6 +17,7 @@ type Container = {
   id: string; name: string; protocol: string; status: string; endpoint: string;
   listen_port: number; transport: string; subnet: string; dns: string; mtu: number;
   revision: number; awg_settings_json: string; wireguard_server_public_key?: string | null;
+  awg_header_protection_key_configured: boolean;
 };
 type Client = {
   id: string; container_id: string; name: string; note: string; assigned_ip: string;
@@ -177,6 +178,15 @@ function App() {
     finally { setActionBusy(false); }
   }
 
+  async function provisionAwgHeaderProtectionKey(containerId: string) {
+    setActionBusy(true); setError('');
+    try {
+      await api('/api/containers/' + containerId + '/awg-header-protection-key', { method: 'POST', body: '{}' });
+      await loadWorkspace();
+    } catch (e) { setError(e instanceof Error ? e.message : 'Не удалось создать HeaderProtectionKey'); }
+    finally { setActionBusy(false); }
+  }
+
   async function createClient(event: FormEvent, containerId: string) {
     event.preventDefault(); setActionBusy(true); setError(''); setIssuedToken('');
     try {
@@ -216,7 +226,7 @@ function App() {
 
   function renderContainerCard(container: Container) {
     return <div key={container.id}>
-      <ContainerCard container={container} clients={clients} onEdit={() => beginAwgEdit(container)} onProvisionKey={() => void provisionServerKey(container.id)} onAdd={() => {
+      <ContainerCard container={container} clients={clients} onEdit={() => beginAwgEdit(container)} onProvisionKey={() => void provisionServerKey(container.id)} onProvisionHeaderKey={() => void provisionAwgHeaderProtectionKey(container.id)} onAdd={() => {
         setClientFormFor(clientFormFor === container.id ? null : container.id);
         setClientName(''); setClientNote('');
       }} />
@@ -337,7 +347,7 @@ function App() {
                 <label className="check-label"><input type="checkbox" checked={awgDraft.random_trailers} onChange={e => setAwgDraft({...awgDraft,random_trailers:e.target.checked})} /> RandomTrailers</label>
                 <label className="check-label"><input type="checkbox" checked={awgDraft.disable_cookies} onChange={e => setAwgDraft({...awgDraft,disable_cookies:e.target.checked})} /> DisableCookies</label>
               </>}
-              <div className="awg-footnote">H1–H4 могут быть числами или диапазонами без пересечений. I1–I5 — CPS-цепочка; формат проверяется базово. Для AWG 3.1 здесь хранятся флаги RandomTrailers / DisableCookies и ContentPaddingAddition. HeaderProtectionKey пока не генерируется и не хранится: для него сначала нужен безопасный жизненный цикл секретов.</div>
+              <div className="awg-footnote">H1–H4 могут быть числами или диапазонами без пересечений. I1–I5 — CPS-цепочка; формат проверяется базово. Для AWG 3.1 здесь хранятся флаги RandomTrailers / DisableCookies и ContentPaddingAddition. HeaderProtectionKey можно создать для AWG 3.1 после установки S1–S4 не меньше 12; он хранится только в зашифрованном виде и не показывается в UI.</div>
             </>}
             <div className="form-actions"><span>PREVIEW · Сохранение не запускает VPN и не применяет настройки к серверу.</span><button className="primary" disabled={actionBusy}>{actionBusy ? 'Сохранение…' : editingAwgId ? 'Сохранить новую ревизию AWG' : 'Создать профиль'}</button></div>
           </form>}
@@ -367,7 +377,7 @@ function App() {
   );
 }
 
-function ContainerCard({ container, clients, onAdd, onEdit, onProvisionKey }: { container: Container; clients: Client[]; onAdd: () => void; onEdit: () => void; onProvisionKey: () => void }) {
+function ContainerCard({ container, clients, onAdd, onEdit, onProvisionKey, onProvisionHeaderKey }: { container: Container; clients: Client[]; onAdd: () => void; onEdit: () => void; onProvisionKey: () => void; onProvisionHeaderKey: () => void }) {
   const related = clients.filter(client => client.container_id === container.id);
   let awg: Partial<AwgSettings> = {};
   try { awg = JSON.parse(container.awg_settings_json || '{}') as Partial<AwgSettings>; } catch {}
@@ -375,6 +385,7 @@ function ContainerCard({ container, clients, onAdd, onEdit, onProvisionKey }: { 
     <div className="container-top"><div><b>{container.name}</b><span className="protocol-tag">{protocolNames[container.protocol] ?? container.protocol}</span></div><span className="preview-tag">PREVIEW</span></div>
     <div className="container-meta"><span>⌖ {container.endpoint}:{container.listen_port}/{container.transport}</span><span>▦ {container.subnet}</span><span>DNS {container.dns}</span><span>MTU {container.mtu}</span></div>
     {container.protocol === 'amnezia-awg' && <div className="awg-summary"><span>AWG {awg.version ?? '—'}</span><span>Jc {awg.jc ?? '—'}</span><span>Junk {awg.jmin ?? '—'}–{awg.jmax ?? '—'} B</span><span>Headers {[awg.h1,awg.h2,awg.h3,awg.h4].filter(Boolean).length}/4</span></div>}
+    {container.protocol === 'amnezia-awg' && awg.version === '3.1' && <div className="server-key-row"><small>HEADER PROTECTION</small>{container.awg_header_protection_key_configured ? <span className="status-enabled">● Ключ создан · зашифрован</span> : [awg.s1,awg.s2,awg.s3,awg.s4].every(value => typeof value === 'number' && value >= 12) ? <button className="secondary compact" onClick={onProvisionHeaderKey}>＋ Создать HeaderProtectionKey</button> : <span className="muted">Для ключа установи S1–S4 ≥ 12 и сохрани профиль</span>}</div>}
     {(container.protocol === 'amnezia-awg' || container.protocol === 'wireguard') && <div className="server-key-row">{container.wireguard_server_public_key ? <><small>SERVER PUBLIC KEY</small><code title={container.wireguard_server_public_key}>{container.wireguard_server_public_key.slice(0, 22)}…</code><button className="text-action" onClick={() => void navigator.clipboard.writeText(container.wireguard_server_public_key!)}>Копировать</button></> : <><small>SERVER KEY NOT PROVISIONED</small><button className="secondary compact" onClick={onProvisionKey}>＋ Создать ключ сервера</button></>}</div>}
     <div className="container-bottom"><span>{related.length} устройств · ревизия {container.revision}</span><div className="card-actions">{container.protocol === 'amnezia-awg' && <button className="secondary compact" onClick={onEdit}>Настроить AWG</button>}<button className="secondary compact" disabled={(container.protocol === 'amnezia-awg' || container.protocol === 'wireguard') && !container.wireguard_server_public_key} onClick={onAdd}>＋ Добавить устройство</button></div></div>
   </article>;
