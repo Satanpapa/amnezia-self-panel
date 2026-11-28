@@ -1,3 +1,4 @@
+pub mod amnezia_uri;
 pub mod awg_config;
 
 use std::{
