@@ -377,9 +377,26 @@ impl RuntimeAdapter for HostRuntime {
     }
 }
 
+pub fn interface_name_for_profile(protocol: &str, profile_id: &str) -> Result<String, &'static str> {
+    let prefix = match protocol {
+        "wireguard" => "wg",
+        "amnezia-awg" => "awg",
+        _ => return Err("Unsupported interface protocol"),
+    };
+    let compact: String = profile_id.bytes()
+        .filter(|byte| byte.is_ascii_hexdigit())
+        .map(char::from)
+        .take(10)
+        .collect();
+    if compact.len() != 10 {
+        return Err("Profile ID must contain at least 10 hexadecimal characters");
+    }
+    Ok(format!("{prefix}{compact}"))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{effective_caps_include_net_admin, HostRuntime, PreviewRuntime, RuntimeAdapter};
+    use super::{effective_caps_include_net_admin, interface_name_for_profile, HostRuntime, PreviewRuntime, RuntimeAdapter};
 
     #[tokio::test]
     async fn preview_runtime_never_claims_to_manage_vpn() {
@@ -400,9 +417,23 @@ mod tests {
 
     #[tokio::test]
     async fn host_preflight_never_claims_to_manage_vpn() {
-        let status = HostRuntime.status().await;
+        let status = HostRuntime::new().status().await;
         assert_eq!(status.mode, "host");
         assert_eq!(status.engine, "linux-host");
         assert!(!status.can_manage_vpn);
+    }
+
+    #[test]
+    fn creates_stable_linux_interface_names_from_profile_ids() {
+        assert_eq!(
+            interface_name_for_profile("amnezia-awg", "12345678-1234-1234-1234-123456789abc").unwrap(),
+            "awg123456781"
+        );
+        assert_eq!(
+            interface_name_for_profile("wireguard", "abcdef12-3456-7890-abcd-ef1234567890").unwrap(),
+            "wgabcdef1234"
+        );
+        assert!(interface_name_for_profile("openvpn", "1234567890").is_err());
+        assert!(interface_name_for_profile("wireguard", "short").is_err());
     }
 }
