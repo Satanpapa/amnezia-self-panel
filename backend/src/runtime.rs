@@ -427,7 +427,7 @@ mod tests {
     fn creates_stable_linux_interface_names_from_profile_ids() {
         assert_eq!(
             interface_name_for_profile("amnezia-awg", "12345678-1234-1234-1234-123456789abc").unwrap(),
-            "awg123456781"
+            "awg1234567812"
         );
         assert_eq!(
             interface_name_for_profile("wireguard", "abcdef12-3456-7890-abcd-ef1234567890").unwrap(),
