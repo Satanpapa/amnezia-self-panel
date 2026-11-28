@@ -596,9 +596,10 @@ pub fn interface_name_for_profile(protocol: &str, profile_id: &str) -> Result<St
 mod tests {
     use super::{
         effective_caps_include_net_admin, effective_uid_is_root, interface_name_for_profile,
-        HostRuntime, PreviewRuntime, RuntimeAdapter,
+        recover_interrupted_operations, HostRuntime, PreviewRuntime, RuntimeAdapter,
     };
     use std::{fs, path::PathBuf};
+    use sqlx::sqlite::SqlitePoolOptions;
 
     #[tokio::test]
     async fn preview_runtime_never_claims_to_manage_vpn() {
@@ -623,6 +624,38 @@ mod tests {
         assert!(!effective_caps_include_net_admin("CapEff:\t0000000000000800\n"));
         assert!(!effective_caps_include_net_admin("CapEff:\tnot-hex\n"));
         assert!(!effective_caps_include_net_admin("Name:\ttest\n"));
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_clears_interrupted_runtime_operations() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE protocol_containers (id TEXT PRIMARY KEY, status TEXT NOT NULL, runtime_operation TEXT)"
+        ).execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO protocol_containers (id, status, runtime_operation) VALUES
+             ('start-crash', 'stopped', 'start'),
+             ('stop-crash', 'running', 'stop'),
+             ('legacy-start-crash', 'starting', NULL),
+             ('healthy', 'running', NULL)"
+        ).execute(&pool).await.unwrap();
+
+        assert_eq!(recover_interrupted_operations(&pool).await.unwrap(), 3);
+
+        let rows = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT status, runtime_operation FROM protocol_containers ORDER BY id"
+        ).fetch_all(&pool).await.unwrap();
+        assert_eq!(rows[0], ("error".into(), None));
+        assert_eq!(rows[1], ("running".into(), None));
+        assert_eq!(rows[2], ("error".into(), None));
+        assert_eq!(rows[3], ("error".into(), None));
+
+        // Recovery is idempotent and does not change healthy running profiles.
+        assert_eq!(recover_interrupted_operations(&pool).await.unwrap(), 0);
     }
 
     #[tokio::test]
