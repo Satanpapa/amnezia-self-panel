@@ -257,8 +257,12 @@ fn trusted_system_executable(name: &str) -> Option<PathBuf> {
         "/bin",
     ];
     for directory in DIRECTORIES {
-        let candidate = fs::canonicalize(Path::new(directory).join(name)).ok()?;
-        let metadata = fs::metadata(&candidate).ok()?;
+        let Ok(candidate) = fs::canonicalize(Path::new(directory).join(name)) else {
+            continue;
+        };
+        let Ok(metadata) = fs::metadata(&candidate) else {
+            continue;
+        };
         if !metadata.is_file() {
             continue;
         }
