@@ -211,6 +211,52 @@ mod tests {
     use super::first_available_client_ip;
     use ipnet::Ipv4Net;
     use std::{collections::HashSet, net::Ipv4Addr, str::FromStr};
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn database_guard_rejects_duplicate_client_ip_for_same_container() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE clients (id TEXT PRIMARY KEY, container_id TEXT NOT NULL, assigned_ip TEXT NOT NULL)"
+        ).execute(&pool).await.unwrap();
+        sqlx::raw_sql(include_str!("../../migrations/0006_client_ip_allocation_guard.sql"))
+            .execute(&pool).await.unwrap();
+
+        sqlx::query("INSERT INTO clients (id, container_id, assigned_ip) VALUES ('a', 'vpn-a', '10.66.0.2')")
+            .execute(&pool).await.unwrap();
+        let duplicate = sqlx::query(
+            "INSERT INTO clients (id, container_id, assigned_ip) VALUES ('b', 'vpn-a', '10.66.0.2')"
+        ).execute(&pool).await.unwrap_err();
+        assert!(duplicate.to_string().contains("duplicate_client_ip"));
+
+        // The same address is valid in a different isolated VPN container.
+        sqlx::query("INSERT INTO clients (id, container_id, assigned_ip) VALUES ('c', 'vpn-b', '10.66.0.2')")
+            .execute(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn database_guard_rejects_duplicate_ip_updates() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE clients (id TEXT PRIMARY KEY, container_id TEXT NOT NULL, assigned_ip TEXT NOT NULL)"
+        ).execute(&pool).await.unwrap();
+        sqlx::raw_sql(include_str!("../../migrations/0006_client_ip_allocation_guard.sql"))
+            .execute(&pool).await.unwrap();
+
+        sqlx::query("INSERT INTO clients (id, container_id, assigned_ip) VALUES ('a', 'vpn-a', '10.66.0.2'), ('b', 'vpn-a', '10.66.0.3')")
+            .execute(&pool).await.unwrap();
+        let duplicate = sqlx::query("UPDATE clients SET assigned_ip = '10.66.0.2' WHERE id = 'b'")
+            .execute(&pool).await.unwrap_err();
+        assert!(duplicate.to_string().contains("duplicate_client_ip"));
+    }
 
     #[test]
     fn reserves_first_usable_address_for_server() {
