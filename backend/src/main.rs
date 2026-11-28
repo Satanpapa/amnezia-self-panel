@@ -73,6 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         runtime,
         wireguard_master_key,
     };
+    reconcile_running_host_interfaces(&state).await?;
 
     let app = Router::new()
         .route("/api/health", get(system::health))
@@ -108,6 +109,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!("Amnezia Panel Rust API listening on http://{address}");
     axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await?;
+    Ok(())
+}
+
+/// Compare persisted "running" profiles with actual Linux interface state at startup.
+async fn reconcile_running_host_interfaces(
+    state: &AppState,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if state.runtime.status().await.mode != "host" {
+        return Ok(());
+    }
+
+    let rows = sqlx::query(
+        "SELECT id, protocol FROM protocol_containers WHERE status = 'running' AND runtime_operation IS NULL"
+    )
+    .fetch_all(&state.pool)
+    .await?;
+
+    for row in rows {
+        let profile_id: String = sqlx::Row::try_get(&row, "id")?;
+        let protocol: String = sqlx::Row::try_get(&row, "protocol")?;
+        let interface_name = match runtime::interface_name_for_profile(&protocol, &profile_id) {
+            Ok(name) => name,
+            Err(_) => continue,
+        };
+        match state.runtime.interface_is_up(&protocol, &interface_name).await {
+            Ok(true) => {}
+            Ok(false) => {
+                let changed = sqlx::query(
+                    "UPDATE protocol_containers SET status = 'error' WHERE id = ? AND status = 'running' AND runtime_operation IS NULL"
+                )
+                .bind(&profile_id)
+                .execute(&state.pool)
+                .await?;
+                if changed.rows_affected() == 1 {
+                    tracing::warn!(
+                        container_id = %profile_id,
+                        interface_name = %interface_name,
+                        "Persisted VPN status was running, but the Linux interface is absent; profile marked for recovery"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    container_id = %profile_id,
+                    interface_name = %interface_name,
+                    error,
+                    "Could not verify Linux interface state during startup; persisted status was left unchanged"
+                );
+            }
+        }
+    }
     Ok(())
 }
 
