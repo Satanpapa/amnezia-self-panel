@@ -215,7 +215,7 @@ pub async fn create(
     Ok(Json(CreateClientResponse {
         item,
         subscription_token,
-        notice: "Subscription token is shown once. WireGuard private keys are encrypted at rest; runtime peer activation and config export are not implemented yet.",
+        notice: "Subscription token is shown once. This peer will be installed the next time the stopped VPN profile starts; a client .conf export is available separately.",
     }))
 }
 
