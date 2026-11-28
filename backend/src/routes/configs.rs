@@ -5,7 +5,7 @@ use axum::{
     extract::{Path, State},
     http::{
         header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, PRAGMA},
-        HeaderValue, Response, StatusCode,
+        HeaderMap, HeaderValue, Response, StatusCode,
     },
 };
 use axum_extra::extract::cookie::CookieJar;
@@ -20,8 +20,11 @@ use crate::{
         render_client_config, render_server_config, ClientConfigInput, ConfigPeer,
         ServerConfigInput,
     },
-    security::wireguard_keys::{
-        decrypt_header_protection_key, decrypt_private_key, public_key_from_private,
+    security::{
+        session::hash_session_token,
+        wireguard_keys::{
+            decrypt_header_protection_key, decrypt_private_key, public_key_from_private,
+        },
     },
     state::AppState,
 };
@@ -205,16 +208,13 @@ pub async fn server_config(
 }
 
 /// Download an active client's one-use configuration draft.
-pub async fn client_config(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Path(client_id): Path<String>,
-) -> Result<Response<Body>, (StatusCode, &'static str)> {
-    let (admin_id, _) = authenticated_admin(&state, &jar).await
-        .map_err(|status| (status, "Authentication required"))?;
+async fn build_client_config(
+    state: &AppState,
+    client_id: &str,
+) -> Result<(Zeroizing<String>, String), (StatusCode, &'static str)> {
     let row = sqlx::query(
         "SELECT c.container_id, c.assigned_ip, c.enabled, c.expires_at, c.wireguard_public_key, c.wireguard_private_key_encrypted, p.protocol, p.endpoint, p.listen_port, p.dns, p.mtu, p.subnet, p.awg_settings_json, p.wireguard_server_public_key, p.wireguard_server_private_key_encrypted, p.awg_header_protection_key_encrypted FROM clients c JOIN protocol_containers p ON p.id = c.container_id WHERE c.id = ?"
-    ).bind(&client_id).fetch_optional(&state.pool).await
+    ).bind(client_id).fetch_optional(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?
         .ok_or((StatusCode::NOT_FOUND, "Client not found"))?;
 
@@ -317,8 +317,23 @@ pub async fn client_config(
         persistent_keepalive: 25,
     }).map_err(|_| (StatusCode::CONFLICT, "Client config cannot be rendered from the stored profile"))?;
 
+
     let container_id: String = row.try_get("container_id")
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid container reference"))?;
+    Ok((config, container_id))
+}
+
+/// Admin-only client config export. The browser session is used for authentication
+/// and the export is recorded against the administrator.
+pub async fn client_config(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(client_id): Path<String>,
+) -> Result<Response<Body>, (StatusCode, &'static str)> {
+    let (admin_id, _) = authenticated_admin(&state, &jar).await
+        .map_err(|status| (status, "Authentication required"))?;
+    let (config, container_id) = build_client_config(&state, &client_id).await?;
+
     let details = serde_json::json!({
         "client_id": client_id,
         "container_id": container_id,
@@ -329,6 +344,40 @@ pub async fn client_config(
     sqlx::query("INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, 'config.client.exported', ?)")
         .bind(admin_id).bind(details).execute(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not audit client config export"))?;
+
+    Ok(config_response("attachment; filename=\"client.conf\"", config))
+}
+
+/// Token-authenticated client config endpoint. The one-time token is accepted only
+/// in the Authorization header, never in the URL or query string.
+pub async fn subscription_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, (StatusCode, &'static str)> {
+    let authorization = headers.get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .ok_or((StatusCode::UNAUTHORIZED, "A subscription bearer token is required"))?;
+    let token = authorization.strip_prefix("Bearer ")
+        .filter(|value| !value.is_empty() && value.len() <= 128)
+        .ok_or((StatusCode::UNAUTHORIZED, "A valid subscription bearer token is required"))?;
+    let token_hash = hash_session_token(token);
+    let client_id: String = sqlx::query_scalar(
+        "SELECT id FROM clients WHERE subscription_token_hash = ?"
+    ).bind(token_hash).fetch_optional(&state.pool).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?
+        .ok_or((StatusCode::UNAUTHORIZED, "Subscription token is invalid"))?;
+
+    let (config, container_id) = build_client_config(&state, &client_id).await?;
+    let details = serde_json::json!({
+        "client_id": client_id,
+        "container_id": container_id,
+        "format": "conf",
+        "kind": "subscription",
+        "runtime_applied": false
+    }).to_string();
+    sqlx::query("INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (NULL, 'config.client.subscription_exported', ?)")
+        .bind(details).execute(&state.pool).await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not audit subscription config export"))?;
 
     Ok(config_response("attachment; filename=\"client.conf\"", config))
 }
