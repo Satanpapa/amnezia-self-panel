@@ -108,6 +108,7 @@ function App() {
   const [clientName, setClientName] = useState('');
   const [clientNote, setClientNote] = useState('');
   const [clientExpiresAt, setClientExpiresAt] = useState('');
+  const [clientTrafficLimitGb, setClientTrafficLimitGb] = useState('0');
   const [actionBusy, setActionBusy] = useState(false);
 
   async function loadWorkspace() {
@@ -280,14 +281,20 @@ function App() {
   async function createClient(event: FormEvent, containerId: string) {
     event.preventDefault(); setActionBusy(true); setError(''); setIssuedToken('');
     try {
+      const trafficLimitGb = Number(clientTrafficLimitGb || '0');
+      const trafficLimitBytes = Math.round(trafficLimitGb * 1024 ** 3);
+      if (!Number.isFinite(trafficLimitGb) || trafficLimitGb < 0 || !Number.isSafeInteger(trafficLimitBytes)) {
+        throw new Error('Укажи корректный лимит трафика в ГиБ');
+      }
       const result = await api<CreatedClient>(`/api/containers/${containerId}/clients`, {
         method: 'POST', body: JSON.stringify({
           name: clientName,
           note: clientNote,
+          traffic_limit_bytes: trafficLimitBytes,
           ...(clientExpiresAt ? { expires_at: new Date(clientExpiresAt).toISOString() } : {}),
         }),
       });
-      setIssuedToken(result.subscription_token); setClientName(''); setClientNote(''); setClientExpiresAt('');
+      setIssuedToken(result.subscription_token); setClientName(''); setClientNote(''); setClientExpiresAt(''); setClientTrafficLimitGb('0');
       setClientFormFor(null); await loadWorkspace();
     } catch (e) { setError(e instanceof Error ? e.message : 'Не удалось создать клиента'); }
     finally { setActionBusy(false); }
@@ -336,13 +343,14 @@ function App() {
     return <div key={container.id}>
       <ContainerCard container={container} clients={clients} runtimeCanManage={!!runtimeStatus?.can_manage_vpn} onStart={() => void operateInterface(container.id, 'start')} onStop={() => void operateInterface(container.id, 'stop')} onEdit={() => beginAwgEdit(container)} onProvisionKey={() => void provisionServerKey(container.id)} onProvisionHeaderKey={() => void provisionAwgHeaderProtectionKey(container.id)} onAdd={() => {
         setClientFormFor(clientFormFor === container.id ? null : container.id);
-        setClientName(''); setClientNote(''); setClientExpiresAt('');
+        setClientName(''); setClientNote(''); setClientExpiresAt(''); setClientTrafficLimitGb('0');
       }} />
       {clientFormFor === container.id && <form className="client-form" onSubmit={event => void createClient(event, container.id)}>
         <label>Имя устройства<input required maxLength={48} value={clientName} onChange={event => setClientName(event.target.value)} placeholder="Ноутбук, телефон…" /></label>
         <label>Заметка<input maxLength={200} value={clientNote} onChange={event => setClientNote(event.target.value)} placeholder="Необязательно" /></label>
+        <label>Лимит трафика, ГиБ<input type="number" min="0" step="0.1" value={clientTrafficLimitGb} onChange={event => setClientTrafficLimitGb(event.target.value)} /></label>
         <label>Срок доступа<input type="datetime-local" value={clientExpiresAt} onChange={event => setClientExpiresAt(event.target.value)} /></label>
-        <small className="muted">Необязательно. Просроченный доступ отключается сервером автоматически в течение примерно 30 секунд.</small>
+        <small className="muted">0 — без лимита. Учёт RX + TX; проверка и отключение выполняются сервером примерно раз в 30 секунд.</small>
         <button className="primary compact" disabled={actionBusy}>{actionBusy ? 'Создание…' : 'Создать доступ'}</button>
       </form>}
     </div>;
