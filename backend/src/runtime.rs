@@ -755,13 +755,17 @@ mod tests {
 
         assert_eq!(recover_interrupted_operations(&pool).await.unwrap(), 3);
 
-        let rows = sqlx::query_as::<_, (String, Option<String>)>(
-            "SELECT status, runtime_operation FROM protocol_containers ORDER BY id"
-        ).fetch_all(&pool).await.unwrap();
-        assert_eq!(rows[0], ("error".into(), None));
-        assert_eq!(rows[1], ("running".into(), None));
-        assert_eq!(rows[2], ("error".into(), None));
-        assert_eq!(rows[3], ("error".into(), None));
+        let healthy = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT status, runtime_operation FROM protocol_containers WHERE id = 'healthy'"
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(healthy, ("running".into(), None));
+
+        for id in ["start-crash", "stop-crash", "legacy-start-crash"] {
+            let recovered = sqlx::query_as::<_, (String, Option<String>)>(
+                "SELECT status, runtime_operation FROM protocol_containers WHERE id = ?"
+            ).bind(id).fetch_one(&pool).await.unwrap();
+            assert_eq!(recovered, ("error".into(), None), "recovery failed for {id}");
+        }
 
         // Recovery is idempotent and does not change healthy running profiles.
         assert_eq!(recover_interrupted_operations(&pool).await.unwrap(), 0);
