@@ -431,6 +431,9 @@ impl HostRuntime {
         interface_name: &str,
         public_key: &str,
     ) -> Result<(), &'static str> {
+        if !self.allow_mutations {
+            return Err("Host mutations are disabled; set HOST_RUNTIME_ALLOW_MUTATIONS=true");
+        }
         if interface_name.is_empty() || interface_name.len() > 15
             || !interface_name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
         {
