@@ -21,7 +21,7 @@ async fn all_sqlite_migrations_apply_to_a_fresh_database() {
     .expect("protocol container runtime operation column should exist");
     assert_eq!(operation_column, 1);
 
-    for column in ["last_rx_bytes", "last_tx_bytes"] {
+    for column in ["last_rx_bytes", "last_tx_bytes", "wireguard_preshared_key_encrypted"] {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pragma_table_info('clients') WHERE name = ?"
         )
