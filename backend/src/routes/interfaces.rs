@@ -27,7 +27,7 @@ async fn audit(
     details: serde_json::Value,
 ) -> Result<(), (StatusCode, &'static str)> {
     sqlx::query("INSERT INTO audit_events (actor_admin_id, action, details_json) VALUES (?, ?, ?)")
-        .bind(admin_id)
+        .bind(*admin_id)
         .bind(action)
         .bind(details.to_string())
         .execute(&state.pool)
