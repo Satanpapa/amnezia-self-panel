@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{env, fs, path::Path, time::Duration};
 
 use async_trait::async_trait;
 use bollard::Docker;
@@ -90,6 +90,112 @@ impl RuntimeAdapter for DockerRuntime {
             engine: "docker",
             message,
             can_manage_vpn: false,
+        }
+    }
+}
+
+
+/// Read-only Linux host probe for the official WireGuard / AmneziaWG tools.
+/// It deliberately does not create interfaces or execute privileged commands.
+#[derive(Debug, Default)]
+pub struct HostRuntime;
+
+fn executable_in_path(name: &str) -> bool {
+    let Some(path) = env::var_os("PATH") else { return false };
+    env::split_paths(&path).any(|directory| {
+        let candidate = directory.join(name);
+        let Ok(metadata) = fs::metadata(&candidate) else { return false };
+        if !metadata.is_file() { return false; }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            metadata.permissions().mode() & 0o111 != 0
+        }
+        #[cfg(not(unix))]
+        { true }
+    })
+}
+
+fn has_cap_net_admin() -> bool {
+    let Ok(status) = fs::read_to_string("/proc/self/status") else { return false };
+    status.lines()
+        .find_map(|line| line.strip_prefix("CapEff:"))
+        .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())
+        .is_some_and(|effective| effective & (1 << 12) != 0)
+}
+
+fn has_tun_device() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        fs::metadata("/dev/net/tun")
+            .map(|metadata| metadata.file_type().is_char_device())
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "linux"))]
+    { false }
+}
+
+fn has_kernel_module(name: &str) -> bool {
+    Path::new("/sys/module").join(name).is_dir()
+}
+
+#[async_trait]
+impl RuntimeAdapter for HostRuntime {
+    async fn status(&self) -> RuntimeStatus {
+        #[cfg(not(target_os = "linux"))]
+        {
+            return RuntimeStatus {
+                mode: "host",
+                available: false,
+                engine: "linux-host",
+                message: "Host runtime preflight is supported only on Linux.".into(),
+                can_manage_vpn: false,
+            };
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let ip = executable_in_path("ip");
+            let awg_tool = executable_in_path("awg");
+            let wg_tool = executable_in_path("wg");
+            let awg_go = executable_in_path("amneziawg-go");
+            let wg_go = executable_in_path("wireguard-go");
+            let tun = has_tun_device();
+            let net_admin = has_cap_net_admin();
+
+            let awg_ready = ip && awg_tool && net_admin
+                && (has_kernel_module("amneziawg") || (awg_go && tun));
+            let wg_ready = ip && wg_tool && net_admin
+                && (has_kernel_module("wireguard") || (wg_go && tun));
+
+            let message = if awg_ready || wg_ready {
+                format!(
+                    "Read-only Linux preflight: AmneziaWG {}ready; WireGuard {}ready. No interface or peer has been created; runtime control is not enabled yet.",
+                    if awg_ready { "" } else { "not " },
+                    if wg_ready { "" } else { "not " },
+                )
+            } else {
+                let mut missing = Vec::new();
+                if !ip { missing.push("iproute2 (ip)"); }
+                if !net_admin { missing.push("CAP_NET_ADMIN"); }
+                if !tun && !has_kernel_module("amneziawg") && !has_kernel_module("wireguard") {
+                    missing.push("/dev/net/tun or a loaded VPN kernel module");
+                }
+                if !awg_tool && !wg_tool { missing.push("awg and/or wg tools"); }
+                if missing.is_empty() {
+                    missing.push("matching VPN tool and kernel/userspace implementation");
+                }
+                format!("Linux host preflight incomplete. Missing: {}. This check is read-only.", missing.join(", "))
+            };
+
+            RuntimeStatus {
+                mode: "host",
+                available: awg_ready || wg_ready,
+                engine: "linux-host",
+                message,
+                can_manage_vpn: false,
+            }
         }
     }
 }
