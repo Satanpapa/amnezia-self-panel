@@ -292,47 +292,88 @@ impl RuntimeAdapter for HostRuntime {
 
         #[cfg(target_os = "linux")]
         {
-            let ip = executable_in_path("ip");
-            let awg_tool = executable_in_path("awg");
-            let wg_tool = executable_in_path("wg");
-            let awg_go = executable_in_path("amneziawg-go");
-            let wg_go = executable_in_path("wireguard-go");
-            let tun = has_tun_device();
-            let net_admin = has_cap_net_admin();
-
-            let awg_ready = ip && awg_tool && net_admin
-                && (has_kernel_module("amneziawg") || (awg_go && tun));
-            let wg_ready = ip && wg_tool && net_admin
-                && (has_kernel_module("wireguard") || (wg_go && tun));
-
-            let message = if awg_ready || wg_ready {
+            let awg_ready = Self::tools_ready("amnezia-awg");
+            let wg_ready = Self::tools_ready("wireguard");
+            let available = awg_ready || wg_ready;
+            let can_manage = available && self.allow_mutations;
+            let message = if can_manage {
                 format!(
-                    "Read-only Linux preflight: AmneziaWG {}ready; WireGuard {}ready. No interface or peer has been created; runtime control is not enabled yet.",
-                    if awg_ready { "" } else { "not " },
-                    if wg_ready { "" } else { "not " },
+                    "Linux host runtime enabled. AmneziaWG {}; WireGuard {}. Interface operations are enabled by HOST_RUNTIME_ALLOW_MUTATIONS.",
+                    if awg_ready { "ready" } else { "not ready" },
+                    if wg_ready { "ready" } else { "not ready" },
                 )
+            } else if available {
+                "Linux VPN tools are ready, but interface changes are disabled. Set HOST_RUNTIME_ALLOW_MUTATIONS=true to enable them.".to_string()
             } else {
                 let mut missing = Vec::new();
-                if !ip { missing.push("iproute2 (ip)"); }
-                if !net_admin { missing.push("CAP_NET_ADMIN"); }
-                if !tun && !has_kernel_module("amneziawg") && !has_kernel_module("wireguard") {
+                if !executable_in_path("ip") { missing.push("iproute2 (ip)"); }
+                if !has_cap_net_admin() { missing.push("CAP_NET_ADMIN"); }
+                if !has_tun_device() && !has_kernel_module("amneziawg") && !has_kernel_module("wireguard") {
                     missing.push("/dev/net/tun or a loaded VPN kernel module");
                 }
-                if !awg_tool && !wg_tool { missing.push("awg and/or wg tools"); }
-                if missing.is_empty() {
-                    missing.push("matching VPN tool and kernel/userspace implementation");
+                if !executable_in_path("awg") || !executable_in_path("awg-quick") {
+                    missing.push("AmneziaWG awg and awg-quick");
                 }
-                format!("Linux host preflight incomplete. Missing: {}. This check is read-only.", missing.join(", "))
+                if !executable_in_path("wg") || !executable_in_path("wg-quick") {
+                    missing.push("WireGuard wg and wg-quick");
+                }
+                format!("Linux host preflight incomplete: {}.", missing.join(", "))
             };
 
             RuntimeStatus {
                 mode: "host",
-                available: awg_ready || wg_ready,
+                available,
                 engine: "linux-host",
                 message,
-                can_manage_vpn: false,
+                can_manage_vpn: can_manage,
             }
         }
+    }
+
+    async fn start_interface(
+        &self,
+        protocol: &str,
+        interface_name: &str,
+        config: Zeroizing<String>,
+    ) -> Result<(), &'static str> {
+        if !self.allow_mutations {
+            return Err("Host mutations are disabled; set HOST_RUNTIME_ALLOW_MUTATIONS=true");
+        }
+        let binary = Self::quick_binary(protocol)?;
+        if !Self::tools_ready(protocol) {
+            return Err("Required Linux VPN tools, kernel support and CAP_NET_ADMIN are missing");
+        }
+        let path = self.config_path(interface_name)?;
+        self.write_config_file(&path, config.as_bytes())?;
+        if let Err(error) = self.run_quick(binary, "up", &path).await {
+            let _ = fs::remove_file(&path);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    async fn stop_interface(
+        &self,
+        protocol: &str,
+        interface_name: &str,
+    ) -> Result<(), &'static str> {
+        if !self.allow_mutations {
+            return Err("Host mutations are disabled; set HOST_RUNTIME_ALLOW_MUTATIONS=true");
+        }
+        let binary = Self::quick_binary(protocol)?;
+        if !Self::tools_ready(protocol) {
+            return Err("Required Linux VPN tools, kernel support and CAP_NET_ADMIN are missing");
+        }
+        let path = self.config_path(interface_name)?;
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|_| "Managed VPN config file does not exist")?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err("Managed VPN config path is not a regular file");
+        }
+        self.run_quick(binary, "down", &path).await?;
+        fs::remove_file(path)
+            .map_err(|_| "Interface stopped, but protected config cleanup failed")?;
+        Ok(())
     }
 }
 
