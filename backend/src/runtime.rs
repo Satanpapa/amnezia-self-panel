@@ -1066,6 +1066,35 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    #[test]
+    fn temporary_preshared_key_files_are_private_and_removed_after_use() {
+        let directory = std::env::temp_dir()
+            .join(format!("amnezia-panel-psk-test-{}", uuid::Uuid::new_v4()));
+        let runtime = HostRuntime {
+            config_dir: PathBuf::from(&directory),
+            allow_mutations: true,
+        };
+        let secret = [0x5a_u8; 32];
+        let file = runtime.write_temporary_preshared_key("awgabcdef1234", &secret).unwrap();
+        let path = file.path.clone();
+        let contents = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            contents,
+            format!("{}\\n", base64::engine::general_purpose::STANDARD.encode(secret))
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(fs::metadata(&directory).unwrap().permissions().mode() & 0o777, 0o700);
+        }
+
+        drop(file);
+        assert!(!path.exists(), "temporary preshared key file was not removed");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn rejects_symlink_runtime_config_directories() {
