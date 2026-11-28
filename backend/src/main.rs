@@ -4,6 +4,7 @@ mod security;
 mod runtime;
 
 use std::{env, net::SocketAddr, path::Path, str::FromStr, sync::Arc};
+use zeroize::Zeroizing;
 use axum::{routing::get, Router};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tower_http::{cors::{Any, CorsLayer}, limit::RequestBodyLimitLayer, trace::TraceLayer};
@@ -45,9 +46,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let wireguard_master_key = match env::var("WIREGUARD_MASTER_KEY") {
         Ok(value) => {
-            let decoded = hex::decode(value.trim())?;
-            let key: [u8; 32] = decoded.try_into().map_err(|_| "WIREGUARD_MASTER_KEY must be exactly 64 hexadecimal characters")?;
-            Some(Arc::new(key))
+            // Keep both the decoded input buffer and the long-lived key in zeroizing containers.
+            let decoded = Zeroizing::new(hex::decode(value.trim())?);
+            let key: [u8; 32] = decoded.as_slice().try_into()
+                .map_err(|_| "WIREGUARD_MASTER_KEY must be exactly 64 hexadecimal characters")?;
+            Some(Arc::new(Zeroizing::new(key)))
         }
         Err(_) => None,
     };
