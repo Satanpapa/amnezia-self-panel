@@ -425,7 +425,7 @@ pub async fn provision_wireguard_server_key(
 
 #[cfg(test)]
 mod tests {
-    use super::{subnets_overlap, validate_transport, AwgSettings};
+    use super::{subnets_overlap, validate_transport, AwgSettings, AwgUint32Range};
     use std::str::FromStr;
     use ipnet::Ipv4Net;
 
