@@ -162,7 +162,7 @@ mod tests {
     fn generates_valid_base64_curve25519_keypair() {
         let (private, public) = generate_keypair();
         let private_bytes: [u8; 32] = *private;
-        let public_bytes: [u8; 32] = STANDARD.decode(public).unwrap().try_into().unwrap();
+        let public_bytes: [u8; 32] = STANDARD.decode(&public).unwrap().try_into().unwrap();
         let derived = PublicKey::from(&StaticSecret::from(private_bytes));
         assert_eq!(derived.as_bytes(), &public_bytes);
         assert_eq!(public_key_from_private(&private_bytes), public);
