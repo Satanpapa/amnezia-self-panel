@@ -11,7 +11,7 @@ use tower_http::{cors::{Any, CorsLayer}, limit::RequestBodyLimitLayer, trace::Tr
 use tracing_subscriber::EnvFilter;
 
 use crate::{
-    routes::{auth, clients, containers, runtime as runtime_routes, setup, system},
+    routes::{auth, clients, configs, containers, runtime as runtime_routes, setup, system},
     runtime::{DockerRuntime, HostRuntime, PreviewRuntime, RuntimeAdapter},
     state::AppState,
 };
