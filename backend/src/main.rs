@@ -46,7 +46,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let wireguard_master_key = match env::var("WIREGUARD_MASTER_KEY") {
         Ok(value) => {
-            // Keep both the decoded input buffer and the long-lived key in zeroizing containers.
+            // Keep the environment-value copy, decoded bytes, and long-lived key in zeroizing containers.
+            let value = Zeroizing::new(value);
             let decoded = Zeroizing::new(hex::decode(value.trim())?);
             let key: [u8; 32] = decoded.as_slice().try_into()
                 .map_err(|_| "WIREGUARD_MASTER_KEY must be exactly 64 hexadecimal characters")?;
