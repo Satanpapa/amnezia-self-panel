@@ -144,9 +144,7 @@ impl AwgSettings {
         if self.version != "3.1" {
             return Err("HeaderProtectionKey requires AmneziaWG 3.1");
         }
-        for (name, value) in [
-            ("S1", self.s1), ("S2", self.s2), ("S3", self.s3), ("S4", self.s4),
-        ] {
+        for value in [self.s1, self.s2, self.s3, self.s4] {
             if value.unwrap_or(0) < 12 {
                 return Err("HeaderProtectionKey requires S1, S2, S3 and S4 to be at least 12");
             }
@@ -581,7 +579,10 @@ pub async fn provision_awg_header_protection_key(
 
 #[cfg(test)]
 mod tests {
-    use super::{subnets_overlap, validate_transport, AwgSettings, AwgUint32Range};
+    use super::{
+        subnets_overlap, validate_dns_servers, validate_endpoint, validate_transport,
+        AwgSettings, AwgUint32Range,
+    };
     use std::str::FromStr;
     use ipnet::Ipv4Net;
 
