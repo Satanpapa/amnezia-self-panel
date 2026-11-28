@@ -310,7 +310,7 @@ pub async fn create(
     }
 
     let item = sqlx::query_as::<_, ContainerRecord>(
-        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key FROM protocol_containers WHERE id = ?"
+        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key, (awg_header_protection_key_encrypted IS NOT NULL) AS awg_header_protection_key_configured FROM protocol_containers WHERE id = ?"
     ).bind(&id).fetch_one(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read saved container"))?;
 
@@ -390,7 +390,7 @@ pub async fn update_awg_profile(
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not commit profile update"))?;
 
     let item = sqlx::query_as::<_, ContainerRecord>(
-        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key FROM protocol_containers WHERE id = ?"
+        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key, (awg_header_protection_key_encrypted IS NOT NULL) AS awg_header_protection_key_configured FROM protocol_containers WHERE id = ?"
     ).bind(&container_id).fetch_one(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read updated profile"))?;
     Ok(Json(item))
@@ -441,7 +441,7 @@ pub async fn provision_wireguard_server_key(
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not commit server keys"))?;
 
     let item = sqlx::query_as::<_, ContainerRecord>(
-        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key FROM protocol_containers WHERE id = ?"
+        "SELECT id, name, protocol, status, endpoint, listen_port, transport, subnet, dns, mtu, revision, created_at, awg_settings_json, wireguard_server_public_key, (awg_header_protection_key_encrypted IS NOT NULL) AS awg_header_protection_key_configured FROM protocol_containers WHERE id = ?"
     ).bind(&container_id).fetch_one(&state.pool).await
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Could not read provisioned profile"))?;
     Ok(Json(item))
