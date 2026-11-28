@@ -346,6 +346,9 @@ impl RuntimeAdapter for HostRuntime {
         let path = self.config_path(interface_name)?;
         self.write_config_file(&path, config.as_bytes())?;
         if let Err(error) = self.run_quick(binary, "up", &path).await {
+            // A failed up can leave a partially created interface; try rollback
+            // while the protected config is still present.
+            let _ = self.run_quick(binary, "down", &path).await;
             let _ = fs::remove_file(&path);
             return Err(error);
         }
