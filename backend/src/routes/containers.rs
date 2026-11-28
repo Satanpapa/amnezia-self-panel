@@ -18,7 +18,7 @@ pub enum AwgUint32Range {
 }
 
 impl AwgUint32Range {
-    fn validate(&self) -> Result<(), &'static str> {
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
         let Self::Range(value) = self else { return Ok(()) };
         if value.len() > 21 || value.trim() != value {
             return Err("ContentPaddingAddition must be a uint32 value or a range such as 16-32");
@@ -140,7 +140,7 @@ impl AwgSettings {
         Ok(())
     }
 
-    fn validate_header_protection(&self) -> Result<(), &'static str> {
+    pub(crate) fn validate_header_protection(&self) -> Result<(), &'static str> {
         if self.version != "3.1" {
             return Err("HeaderProtectionKey requires AmneziaWG 3.1");
         }
