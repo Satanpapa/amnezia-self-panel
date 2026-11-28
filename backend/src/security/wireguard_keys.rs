@@ -86,7 +86,7 @@ fn encrypt_versioned_secret(
     OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher.encrypt(nonce, Payload { msg: &secret[..], aad: version })
-        .map_err(|_| "Could not encrypt header-protection key")?;
+        .map_err(|_| "Could not encrypt versioned VPN secret")?;
     let mut stored = Vec::with_capacity(version.len() + nonce_bytes.len() + ciphertext.len());
     stored.extend_from_slice(version);
     stored.extend_from_slice(&nonce_bytes);
@@ -116,20 +116,20 @@ fn decrypt_versioned_secret(
     expected_version: &[u8; 4],
 ) -> Result<Zeroizing<[u8; 32]>, &'static str> {
     if stored.len() < 4 + 12 + 16 {
-        return Err("Encrypted header-protection key is truncated");
+        return Err("Encrypted VPN secret is truncated");
     }
     if &stored[..4] != expected_version {
-        return Err("Unsupported encrypted header-protection key format");
+        return Err("Unsupported encrypted VPN secret format");
     }
     let cipher = ChaCha20Poly1305::new_from_slice(master_key)
         .map_err(|_| "Invalid WireGuard master key")?;
     let nonce = Nonce::from_slice(&stored[4..16]);
     let plaintext = Zeroizing::new(
         cipher.decrypt(nonce, Payload { msg: &stored[16..], aad: expected_version })
-            .map_err(|_| "Could not authenticate encrypted header-protection key")?
+            .map_err(|_| "Could not authenticate encrypted VPN secret")?
     );
     let key: [u8; 32] = plaintext.as_slice().try_into()
-        .map_err(|_| "Decrypted header-protection key has an invalid length")?;
+        .map_err(|_| "Decrypted VPN secret has an invalid length")?;
     Ok(Zeroizing::new(key))
 }
 
