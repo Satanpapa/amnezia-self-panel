@@ -1,4 +1,9 @@
-use axum::{extract::{Path, State}, http::StatusCode, Json};
+use axum::{
+    extract::{Path, State},
+    http::{header::CACHE_CONTROL, HeaderValue, StatusCode},
+    response::IntoResponse,
+    Json,
+};
 use axum_extra::extract::cookie::CookieJar;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -305,7 +310,7 @@ pub async fn peer_stats(
     State(state): State<AppState>,
     jar: CookieJar,
     Path(container_id): Path<String>,
-) -> Result<Json<PeerStatsResponse>, (StatusCode, &'static str)> {
+) -> Result<axum::response::Response, (StatusCode, &'static str)> {
     authenticated_admin(&state, &jar).await
         .map_err(|status| (status, "Authentication required"))?;
 
@@ -376,11 +381,16 @@ pub async fn peer_stats(
         });
     }
 
-    Ok(Json(PeerStatsResponse {
+    let mut response = Json(PeerStatsResponse {
         container_id,
         interface_name,
         peer_count: tracked_count,
         unmatched_peer_count: by_key.len().saturating_sub(tracked_count),
         items,
-    }))
+    }).into_response();
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache, must-revalidate, max-age=0"),
+    );
+    Ok(response)
 }
