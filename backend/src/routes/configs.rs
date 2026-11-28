@@ -64,7 +64,6 @@ fn config_response(filename: &'static str, mut config: Zeroizing<String>) -> Res
 
 /// Server configuration prepared for either download or runtime activation.
 pub struct ServerConfigDraft {
-    pub protocol: String,
     pub revision: i64,
     pub peer_count: usize,
     pub config: Zeroizing<String>,
@@ -174,7 +173,6 @@ pub async fn build_server_config(
     }).map_err(|_| (StatusCode::CONFLICT, "Server config cannot be rendered from the stored profile"))?;
 
     Ok(ServerConfigDraft {
-        protocol,
         revision,
         peer_count: peer_refs.len(),
         config,
