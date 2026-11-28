@@ -705,6 +705,7 @@ pub fn interface_name_for_profile(protocol: &str, profile_id: &str) -> Result<St
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine as _;
     use super::{
         effective_caps_include_net_admin, effective_uid_is_root, interface_name_for_profile,
         recover_interrupted_operations, HostRuntime, PreviewRuntime, RuntimeAdapter,
