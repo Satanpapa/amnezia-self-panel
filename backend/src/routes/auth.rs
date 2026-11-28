@@ -34,6 +34,11 @@ async fn record_failed_login(
     username_hash: &str,
     now: i64,
 ) -> Result<bool, sqlx::Error> {
+    // Bound table growth from requests for arbitrary, non-existent usernames.
+    sqlx::query(
+        "DELETE FROM auth_login_attempts WHERE window_started_at <= ? AND (blocked_until IS NULL OR blocked_until <= ?)"
+    ).bind(now - 24 * 60 * 60).bind(now).execute(pool).await?;
+
     let window_cutoff = now - LOGIN_FAILURE_WINDOW_SECONDS;
     let blocked_until = now + LOGIN_LOCK_SECONDS;
     let locked_until: Option<i64> = sqlx::query_scalar(
